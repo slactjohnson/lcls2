@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
 import configparser
-from psalg.configdb.typed_json import cdict
-from psalg.configdb.configdb import configdb as cdb
+from psdaq.configdb.typed_json import cdict
+from psdaq.configdb.configdb import configdb as cdb
 
 class Assembly(object):
     """
