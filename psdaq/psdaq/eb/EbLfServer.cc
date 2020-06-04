@@ -3,18 +3,17 @@
 #include "Endpoint.hh"
 
 #include "psdaq/service/fast_monotonic_clock.hh"
-#include "psalg/utils/SysLog.hh"
 
 #include <chrono>
 #include <memory>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 using namespace Pds;
 using namespace Pds::Fabrics;
 using namespace Pds::Eb;
-using logging = psalg::SysLog;
 
 
 EbLfServer::EbLfServer(unsigned verbose) :
@@ -44,8 +43,8 @@ int EbLfServer::initialize(const std::string& addr,
   _pep = new PassiveEndpoint(addr.c_str(), port.c_str(), flags, txSize, rxSize);
   if (!_pep || (_pep->state() != EP_UP))
   {
-    logging::error("%s:\n  Failed to create Passive Endpoint: %s",
-                   __PRETTY_FUNCTION__, _pep ? _pep->error() : "No memory");
+    fprintf(stderr, "%s:\n  Failed to create Passive Endpoint: %s\n",
+            __PRETTY_FUNCTION__, _pep ? _pep->error() : "No memory");
     return _pep ? _pep->error_num(): ENOMEM;
   }
 
@@ -61,40 +60,42 @@ int EbLfServer::initialize(const std::string& addr,
   _eq = new EventQueue(fab, 0);
   if (!_eq)
   {
-    logging::error("%s:\n  Failed to create Event Queue: %s",
-                   __PRETTY_FUNCTION__, "No memory");
+    fprintf(stderr, "%s:\n  Failed to create Event Queue: %s\n",
+            __PRETTY_FUNCTION__, "No memory");
     return ENOMEM;
   }
 
   struct fi_info* info   = fab->info();
   size_t          cqSize = nLinks * info->rx_attr->size;
-  if (_verbose)  printf("EbLfServer: rx_attr.size = %zd, tx_attr.size = %zd\n",
-                        info->rx_attr->size, info->tx_attr->size);
+  if (_verbose > 1)  printf("EbLfServer: rx_attr.size = %zd, tx_attr.size = %zd\n",
+                            info->rx_attr->size, info->tx_attr->size);
   _rxcq = new CompletionQueue(fab, cqSize);
   if (!_rxcq)
   {
-    logging::error("%s:\n  Failed to create Rx Completion Queue: %s",
-                   __PRETTY_FUNCTION__, "No memory");
+    fprintf(stderr, "%s:\n  Failed to create Rx Completion Queue: %s\n",
+            __PRETTY_FUNCTION__, "No memory");
     return ENOMEM;
   }
 
-  if(!_pep->listen(nLinks))
+  if (!_pep->listen(nLinks))
   {
-    logging::error("%s:\n  Failed to set Passive Endpoint to listening state: %s",
-                   __PRETTY_FUNCTION__, _pep->error());
+    fprintf(stderr, "%s:\n  Failed to set Passive Endpoint to listening state: %s\n",
+            __PRETTY_FUNCTION__, _pep->error());
     return _pep->error_num();
   }
-  logging::info("EbLfServer is listening for %d client(s) on port %s",
-                nLinks, port.c_str());
+
+  if (_verbose)
+    printf("EbLfServer is listening for %d client(s) on port %s\n",
+           nLinks, port.c_str());
 
   return 0;
 }
 
-int EbLfServer::connect(EbLfSvrLink** link, unsigned id, int tmo)
+int EbLfServer::connect(EbLfSvrLink** link, unsigned id, int msTmo)
 {
   CompletionQueue* txcq    = nullptr;
   uint64_t         txFlags = 0;
-  Endpoint* ep = _pep->accept(tmo, _eq, txcq, txFlags, _rxcq, FI_RECV);
+  Endpoint* ep = _pep->accept(msTmo, _eq, txcq, txFlags, _rxcq, FI_RECV);
   if (!ep)
   {
     fprintf(stderr, "%s:\n  Failed to accept connection: %s\n",
@@ -103,7 +104,7 @@ int EbLfServer::connect(EbLfSvrLink** link, unsigned id, int tmo)
   }
 
   int rxDepth = _pep->fabric()->info()->rx_attr->size;
-  if (_verbose)  printf("EbLfServer: rx_attr.size = %d\n", rxDepth);
+  if (_verbose > 1)  printf("EbLfServer: rx_attr.size = %d\n", rxDepth);
   *link = new EbLfSvrLink(ep, rxDepth, _verbose);
   if (!*link)
   {
@@ -138,7 +139,8 @@ int EbLfServer::pollEQ()
       if (_linkByEp.find(ep) != _linkByEp.end())
       {
         EbLfSvrLink* link = _linkByEp[ep];
-        printf("EbLfClient %d disconnected\n", link->id());
+        if (_verbose)
+          printf("EbLfClient %d disconnected\n", link->id());
         _linkByEp.erase(ep);
         rc = (_linkByEp.size() == 0) ? -FI_ENOTCONN : FI_SUCCESS;
       }
@@ -181,7 +183,8 @@ int EbLfServer::pollEQ()
 
 int EbLfServer::disconnect(EbLfSvrLink* link)
 {
-  printf("Disconnecting from EbLfClient %d\n", link->id());
+  if (_verbose)
+    printf("Disconnecting from EbLfClient %d\n", link->id());
 
   Endpoint* ep = link->endpoint();
   if (!ep)  return -FI_ENOTCONN;
@@ -197,19 +200,16 @@ void EbLfServer::shutdown()
 {
   if (_pep)
   {
-    _pep->shutdown();
     delete _pep;
     _pep = nullptr;
   }
   if (_rxcq)
   {
-    _rxcq->shutdown();
     delete _rxcq;
     _rxcq = nullptr;
   }
   if (_eq)
   {
-    _eq->shutdown();
     delete _eq;
     _eq = nullptr;
   }

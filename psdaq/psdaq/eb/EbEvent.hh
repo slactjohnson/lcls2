@@ -6,6 +6,7 @@
 #include "psdaq/service/LinkedList.hh"
 #include "psdaq/service/Pool.hh"
 #include "psdaq/service/EbDgram.hh"
+#include "psdaq/service/fast_monotonic_clock.hh" // Revisit: Temporary?
 
 
 namespace Pds {
@@ -21,10 +22,10 @@ namespace Pds {
     public:
       PoolDeclare;
     public:
-      EbEvent(uint64_t                contract,
-              EbEvent*                after,
+      EbEvent(uint64_t            contract,
+              EbEvent*            after,
               const Pds::EbDgram* ctrb,
-              unsigned                prm);
+              unsigned            prm);
       ~EbEvent();
     public:
       unsigned        parameter() const;
@@ -32,6 +33,7 @@ namespace Pds {
       size_t          size()      const;
       uint64_t        remaining() const;
       uint64_t        contract()  const;
+      bool            alive()     const;
       XtcData::Damage damage()    const;
       void            damage(XtcData::Damage::Value);
     public:
@@ -40,6 +42,7 @@ namespace Pds {
       const Pds::EbDgram** const  end()     const;
     public:
       void     dump(int number);
+      fast_monotonic_clock::time_point t0; // Revisit: Temporary?
     private:
       friend class EventBuilder;
     private:
@@ -47,12 +50,12 @@ namespace Pds {
       void     _insert(const Pds::EbDgram*);
       bool     _alive();
     private:
-      size_t                   _size;            // Total contribution size (in bytes)
-      uint64_t                 _remaining;       // List of clients which have contributed
-      const uint64_t           _contract;        // -> potential list of contributors
-      int                      _living;          // Aging counter
-      unsigned                 _prm;             // An application level free parameter
-      XtcData::Damage          _damage;          // Accumulate damage about this event
+      size_t               _size;            // Total contribution size (in bytes)
+      uint64_t             _remaining;       // List of clients which have contributed
+      const uint64_t       _contract;        // -> potential list of contributors
+      int                  _living;          // Aging counter
+      unsigned             _prm;             // An application level free parameter
+      XtcData::Damage      _damage;          // Accumulate damage about this event
       const Pds::EbDgram** _last;            // Pointer into the contributions array
       const Pds::EbDgram*  _contributions[]; // Array of contributions
     };
@@ -198,6 +201,11 @@ inline const Pds::EbDgram** const Pds::Eb::EbEvent::end() const
 inline bool Pds::Eb::EbEvent::_alive()
 {
   return --_living > 0;
+}
+
+inline bool Pds::Eb::EbEvent::alive() const
+{
+  return _living > 0;
 }
 
 #endif

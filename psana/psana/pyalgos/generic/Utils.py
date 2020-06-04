@@ -10,6 +10,7 @@ Usage::
     # Run test: python lcls2/psana/psana/pyalgos/generic/Utils.py 1
 
     # Import
+    from psana.pyalgos.generic.Utils import input_single_char
     import psana.pyalgos.generic.Utils as gu
 
     # Methods
@@ -42,6 +43,10 @@ Usage::
     arr  = gu.load_textfile(path)
     gu.save_textfile(text, path, mode='w') # mode: 'w'-write, 'a'-append 
 
+    jo = gu.load_json(fname)
+    gu.save_json(jo, fname)
+    o = gu.load_pickle(fname)
+    gu.save_pickle(o, fname)
 
     # Save image in file
     # ==================
@@ -62,7 +67,11 @@ Usage::
     gu.print_kwargs(kwargs)
     gu.print_parser(parser) # from optparse import OptionParser
 
-    s = do_print(nev) # returns true for sparcified event numbers.
+    s = gu.do_print(nev) # returns true for sparcified event numbers.
+    ch = gu.input_single_char('Next event? [y/n]')
+
+    os_system(cmd)
+    os_command(cmd)
 
 See:
     - :py:class:`Utils`
@@ -84,8 +93,10 @@ import getpass
 import socket
 from time import localtime, strftime, time, strptime, mktime
 import numpy as np
+import tty, termios
+
 #import subprocessif 
-    
+
 from subprocess import call
 if sys.version_info.major == 2:
     from commands import getoutput
@@ -94,10 +105,10 @@ else:
 
 #------------------------------
 
+# init_logger etc is moved to logger.py
+# from psana.pyalgos.generic.logger import init_logger, STR_LEVEL_NAMES, DICT_NAME_TO_LEVEL, TSFORMAT
 import logging
 logger = logging.getLogger('__name__')
-
-TSFORMAT = '%Y-%m-%dT%H:%M:%S%z'
 
 #------------------------------
 
@@ -328,6 +339,45 @@ def load_textfile(path, verb=False) :
 
 #------------------------------
 
+def load_json(fname) :
+    """Load json object from file.
+    """
+    logger.debug('load_json %s' % fname)
+    import json
+    return json.load(open(fname,'rb'))
+    # or
+    #with open(fname) as f: jo = json.load(f)
+    #return jo
+
+#------------------------------
+
+def save_json(jo, fname, mode='w') :
+    """Saves json object in file.
+    """
+    logger.debug('save_json %s' % fname)
+    import json
+    with open(fname, mode) as f: json.dump(jo, f)
+
+#------------------------------
+
+def load_pickle(fname, mode='rb') :
+    """Returns object from packed in file.
+    """
+    logger.debug('load_pickle %s' % fname)
+    import pickle
+    return pickle.load(open(fname, mode))
+
+#------------------------------
+
+def save_pickle(o, fname, mode='wb') :
+    """Saves object in the pickle file.
+    """
+    logger.debug('save_pickle %s' % fname)
+    import pickle
+    with open(fname, mode) as f: pickle.dump(o, f)
+
+#------------------------------
+
 def save_image_tiff(image, fname='image.tiff', verb=False) :
     """Saves image in 16-bit tiff file
     """
@@ -478,9 +528,6 @@ def str_kwargs(kwargs, title='Input parameters:', fmt='\n%20s : %s'):
 
 #------------------------------
 
-#def print_kwargs(kwargs, title='Input parameters:', fmt='\n%20s : %s'):
-#    print(gu.str_kwargs(kwargs, title, fmt)
-
 def print_kwargs(kwargs) :
     print('%s\n  kwargs:' % (40*'_'))
     for k,v in kwargs.items() : print('  %10s : %10s' % (k,v))
@@ -526,10 +573,44 @@ def do_print(nev) :
 
 #------------------------------
 
+def input_single_char(prompt='input? >'):
+    """ input of single character from keybord without <CR> 
+        import sys, tty, termios
+    """
+    sys.stdout.write('\r'+prompt)
+    sys.stdout.flush()
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    tty.setraw(fd)
+    ch = sys.stdin.read(1)
+    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return ch
+
+#------------------------------
+
 #def get_grpnames(user='root') :
 #    """Returns tuple of group names"""
 #    from grp import getgrnam
 #    return getgrnam(user)
+
+
+#------------------------------
+
+def os_system(cmd):
+    assert isinstance(cmd,str), 'command should be str'       
+    os.system(cmd)
+    logger.debug('os_system command: %s' % cmd)
+    
+#------------------------------
+
+def os_command(cmd):
+    assert isinstance(cmd,str), 'command should be str'       
+    #_cmd = cmd.split() if isinstance(cmd,str) else cmd
+    _cmd = cmd
+    stream = os.popen(_cmd)
+    resp = stream.read()
+    msg = '%s\n%s' % (_cmd, resp) if resp else _cmd
+    logger.debug('os_command resp: %s' % msg)
 
 #------------------------------
 #----------- TEST -------------
@@ -565,6 +646,13 @@ if __name__ == "__main__" :
 
   #------------------------------
 
+  def test_input_single_char() :    
+    for n in range(20) :
+      ch = input_single_char('Event:%03d Next event? [y/n]' %n)
+      if ch != 'y' : sys.exit('\nExit by key %s' % ch)
+
+  #------------------------------
+
   def test_01() :    
     #logger.debug('debug msg')  # will print a message to the console
     #logger.warning('Watch out!')  # will print a message to the console
@@ -591,6 +679,7 @@ if __name__ == "__main__" :
                         #filename='example.log', filemode='w'
     test_01()
     test_datetime()
+    test_input_single_char()
     sys.exit('\nEnd of test')
 
 #------------------------------

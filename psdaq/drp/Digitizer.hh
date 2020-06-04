@@ -17,12 +17,12 @@ public:
     void connect(const nlohmann::json&, const std::string& collectionId) override;
     unsigned configure(const std::string& config_alias, XtcData::Xtc& xtc) override;
     void event(XtcData::Dgram& dgram, PGPEvent* event) override;
+    void shutdown() override;
 private:
-    unsigned _addJson(XtcData::Xtc& xtc, XtcData::NamesId& configNamesId);
+    unsigned _addJson(XtcData::Xtc& xtc, XtcData::NamesId& configNamesId, const std::string& config_alias);
     unsigned _getPaddr();
 private:
     enum {ConfigNamesIndex = NamesIndex::BASE, EventNamesIndex};
-    unsigned          m_evtcount;
     unsigned          m_readoutGroup;
     XtcData::NamesId  m_evtNamesId;
     std::string       m_connect_json;

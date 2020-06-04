@@ -15,7 +15,6 @@ find_package(PythonLibs REQUIRED)
 find_package(prometheus-cpp REQUIRED)
 find_package(ZeroMQ REQUIRED)
 find_package(epics REQUIRED)
-find_package(cpsw REQUIRED)
 find_package(RapidJSON REQUIRED)
 
 find_library(YAML_CPP_LIB yaml-cpp)
@@ -31,3 +30,4 @@ link_directories(${CMAKE_PREFIX_PATH}/lib)
 
 add_subdirectory(psdaq)
 add_subdirectory(drp)
+add_subdirectory(epicsArch)

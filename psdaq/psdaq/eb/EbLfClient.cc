@@ -5,8 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 #include <chrono>
+#include <thread>
 
 using namespace Pds;
 using namespace Pds::Fabrics;
@@ -25,7 +25,7 @@ int EbLfClient::connect(EbLfCltLink** link,
                         const char*   peer,
                         const char*   port,
                         unsigned      id,
-                        unsigned      tmo)
+                        unsigned      msTmo)
 {
   _pending = 0;
 
@@ -43,14 +43,14 @@ int EbLfClient::connect(EbLfCltLink** link,
   if (_verbose)
   {
     void* data = fab;                   // Something since data can't be NULL
-    printf("EbLfClient is using LibFabric version '%s', fabric '%s', '%s' provider version %08x\n",
+    printf("LibFabric version '%s', fabric '%s', '%s' provider version %08x\n",
            fi_tostr(data, FI_TYPE_VERSION), fab->name(), fab->provider(), fab->version());
   }
 
   struct fi_info*  info   = fab->info();
   size_t           cqSize = info->tx_attr->size;
-  if (_verbose)  printf("EbLfClient: rx_attr.size = %zd, tx_attr.size = %zd\n",
-                        info->rx_attr->size, info->tx_attr->size);
+  if (_verbose > 1)  printf("EbLfClient: rx_attr.size = %zd, tx_attr.size = %zd\n",
+                            info->rx_attr->size, info->tx_attr->size);
   CompletionQueue* txcq   = new CompletionQueue(fab, cqSize);
   if (!txcq)
   {
@@ -59,7 +59,8 @@ int EbLfClient::connect(EbLfCltLink** link,
     return -FI_ENOMEM;
   }
 
-  printf("EbLfClient is waiting for server %s:%s\n", peer, port);
+  if (_verbose)
+    printf("EbLfClient is waiting %d ms for server %s:%s\n", msTmo, peer, port);
 
   EventQueue*      eq   = nullptr;
   CompletionQueue* rxcq = nullptr;
@@ -76,17 +77,21 @@ int EbLfClient::connect(EbLfCltLink** link,
   uint64_t dT = 0;
   while (true)
   {
-    if (ep->connect(tmo, FI_TRANSMIT | FI_SELECTIVE_COMPLETION, 0))  break; // Success
+    if (ep->connect(msTmo, FI_TRANSMIT | FI_SELECTIVE_COMPLETION, 0))  break; // Success
     if (ep->error_num() == -FI_ENODATA)       break; // connect() timed out
     if (ep->error_num() != -FI_ECONNREFUSED)  break; // Serious error
 
     t1 = std::chrono::steady_clock::now();
     dT = std::chrono::duration_cast<ms_t>(t1 - t0).count();
-    if (tmo && (dT > tmo))  break;
+    if (msTmo && (dT > msTmo))  break;
 
-    ep->shutdown();               // Can't try to connect on an EP a 2nd time
+    ep->shutdown();                 // Can't try to connect on an EP a 2nd time
+
+    // Retrying too quickly can cause libfabric sockets EP to segfault
+    // Jan 2020: LF 1.7.1, sock_ep_cm_thread()->sock_pep_req_handler(), pep = 0
+    std::this_thread::sleep_for(ms_t(100));
   }
-  if ((ep->error_num() != FI_SUCCESS) || (tmo && (dT > tmo)))
+  if ((ep->error_num() != FI_SUCCESS) || (msTmo && (dT > msTmo)))
   {
     int rc = ep->error_num();
     fprintf(stderr, "%s:\n  Error connecting to %s:%s: %s\n",
@@ -114,7 +119,8 @@ int EbLfClient::connect(EbLfCltLink** link,
 
 int EbLfClient::disconnect(EbLfCltLink* link)
 {
-  printf("Disconnecting from EbLfServer %d\n", link->id());
+  if (_verbose)
+    printf("Disconnecting from EbLfServer %d\n", link->id());
 
   Endpoint* ep = link->endpoint();
   if (ep)
@@ -123,7 +129,6 @@ int EbLfClient::disconnect(EbLfCltLink* link)
     Fabric*          fab  = ep->fabric();
     if (txcq)  delete txcq;
     if (fab)   delete fab;
-    ep->shutdown();
     delete ep;
   }
   delete link;

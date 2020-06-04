@@ -1,5 +1,8 @@
 find_package(PythonLibs REQUIRED)
 
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 add_library(utilities SHARED
   utilities.cc
   IndexPool.cc
@@ -13,6 +16,7 @@ target_include_directories(utilities PUBLIC
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}>
   $<INSTALL_INTERFACE:include>
   ${PYTHON_INCLUDE_DIRS}
+  Threads::Threads
 )
 
 target_link_libraries(utilities
@@ -57,7 +61,7 @@ target_link_libraries(eventBuilder
   utilities
 )
 
-#add_executable(ft_pingpong ft_pingpong.cc fiTransport.cc)
+add_executable(ft_pingpong ft_pingpong.cc fiTransport.cc)
 
 add_executable(ft_publish         ft_publish.cc)
 add_executable(ft_sub             ft_sub.cc)
@@ -74,9 +78,9 @@ add_executable(tstEbLfLink      tstEbLfLink.cc)
 
 #add_executable(ibMon            ibMon.cc)
 
-#add_executable(ctrb
-#  ctrb.cc
-#)
+add_executable(ctrb
+  ctrb.cc
+)
 
 add_executable(teb
   teb.cc
@@ -97,13 +101,13 @@ target_include_directories(teb PUBLIC
 #  $ENV{CONDA_PREFIX}/include
 #)
 
-#target_link_libraries(ft_pingpong
-#  utilities
-#)
+target_link_libraries(ft_pingpong
+  utilities
+)
 
 target_link_libraries(ft_publish
   utilities
-  pthread
+  Threads::Threads
 )
 
 target_link_libraries(ft_sub
@@ -140,30 +144,31 @@ target_link_libraries(eblf_pingpong
 
 target_link_libraries(tstEbLfLink
   utilities
-  pthread
+  Threads::Threads
   rt
 )
 
 #target_link_libraries(ibMon
 #  zmq
-#  pthread
+#  Threads::Threads
 #  rt
 #)
 #
-#target_link_libraries(ctrb
-#  contributor
-#  collection
-#  exporter
-#  pthread
-#  rt
-#)
+
+target_link_libraries(ctrb
+  contributor
+  collection
+  exporter
+  Threads::Threads
+  rt
+)
 
 target_link_libraries(teb
   eventBuilder
   trigger
   collection
   exporter
-  pthread
+  Threads::Threads
   rt
   dl
   xtcdata::xtc
@@ -174,7 +179,7 @@ install(TARGETS
   utilities
   contributor
   eventBuilder
-  #ctrb
+  ctrb
   teb
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -242,7 +247,7 @@ target_link_libraries(tstIndexPool
 #  collection
 #  fabric
 #  zmq
-#  pthread
+#  Threads::Threads
 #  rt
 #  -pg
 #)
@@ -253,7 +258,7 @@ target_link_libraries(tstIndexPool
 #  collection
 #  fabric
 #  zmq
-#  pthread
+#  Threads::Threads
 #  rt
 #  -pg
 #)

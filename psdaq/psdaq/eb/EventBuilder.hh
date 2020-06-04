@@ -21,23 +21,22 @@ namespace Pds {
     class EventBuilder
     {
     public:
-      EventBuilder(unsigned epochs,
-                   unsigned entries,
-                   unsigned sources,
-                   uint64_t mask,
-                   unsigned verbose);
+      EventBuilder(unsigned        epochs,
+                   unsigned        entries,
+                   unsigned        sources,
+                   uint64_t        mask,
+                   const unsigned& verbose);
       virtual ~EventBuilder();
     public:
-      virtual void       fixup(EbEvent*, unsigned srcId)         = 0;
-      virtual void       process(EbEvent*)                       = 0;
+      virtual void       fixup(EbEvent*, unsigned srcId)     = 0;
+      virtual void       process(EbEvent*)                   = 0;
       virtual uint64_t   contract(const Pds::EbDgram*) const = 0;
     public:
       void               expired();
     public:
       void               process(const Pds::EbDgram* dgrams,
-                                 const size_t            bufSize,
-                                 unsigned                maxEntries,
-                                 unsigned                prm);
+                                 const size_t        bufSize,
+                                 unsigned            prm);
     public:
       void               clear();
       void               dump(unsigned detail) const;
@@ -45,7 +44,6 @@ namespace Pds {
       const uint64_t&    epochFreeCnt()  const;
       const uint64_t&    eventAllocCnt() const;
       const uint64_t&    eventFreeCnt()  const;
-      const uint64_t&    tmoEvtCnt()     const;
     private:
       unsigned          _epIndex(uint64_t key) const;
       unsigned          _evIndex(uint64_t key) const;
@@ -71,9 +69,7 @@ namespace Pds {
       std::vector<EbEpoch*> _epochLut;      // LUT of allocated epochs
       GenericPool           _eventFreelist; // Freelist for new events
       std::vector<EbEvent*> _eventLut;      // LUT of allocated events
-      const EbEvent*        _due;           // Newest due event, if any
-      unsigned              _verbose;       // Print progress info
-      uint64_t              _tmoEvtCnt;     // Count of timed out events
+      const unsigned&       _verbose;       // Print progress info
     };
   };
 };
@@ -98,8 +94,4 @@ inline const uint64_t& Pds::Eb::EventBuilder::eventFreeCnt() const
   return _eventFreelist.numberofFrees();
 }
 
-inline const uint64_t& Pds::Eb::EventBuilder::tmoEvtCnt() const
-{
-  return _tmoEvtCnt;
-}
 #endif

@@ -25,8 +25,8 @@
 #include <atomic>
 #include <climits>                      // For HOST_NAME_MAX
 
-static const int      CORE_0               = 18; // devXXX: 18, devXX:  7, accXX:  9
-static const int      CORE_1               = 19; // devXXX: 19, devXX: 19, accXX: 21
+static const int      CORE_0               = -1; // devXXX: 18, devXX:  7, accXX:  9
+static const int      CORE_1               = -1; // devXXX: 19, devXX: 19, accXX: 21
 static const unsigned EPOCH_DURATION       = 8;  // Revisit: 1 per xferBuffer
 static const unsigned NUMBEROF_XFERBUFFERS = 8;  // Value corresponds to ctrb:maxEvents
 static const unsigned PROM_PORT_BASE       = 9200; // Prometheus port
@@ -49,15 +49,17 @@ void sigHandler( int signal )
 
   if (callCount == 0)
   {
-    logging::info("\nShutting down");
+    logging::info("Shutting down");
 
     lRunning = 0;
   }
 
   if (callCount++)
   {
-    logging::critical("Aborting on 2nd ^C...");
-    ::abort();
+    logging::critical("Aborting on 2nd ^C");
+
+    sigaction(signal, &lIntAction, NULL);
+    raise(signal);
   }
 }
 
@@ -133,9 +135,10 @@ namespace Pds {
       for (unsigned i = 0; i < numBuffers; ++i)
       {
         if (_bufFreeList.push(i))
+        {
           logging::error("%s:\n  _bufFreeList.push(%d) failed", __PRETTY_FUNCTION__, i);
-        //printf("%s:\n  _bufFreeList.push(%d), count = %zd\n",
-        //       __PRETTY_FUNCTION__, i, _bufFreeList.count());
+          return -1;
+        }
       }
 
       _init();
@@ -158,7 +161,7 @@ namespace Pds {
   private:
     virtual void _copyDatagram(Dgram* dg, char* buf)
     {
-      //printf("_copyDatagram:   dg = %p, ts = %d.%09d to %p\n",
+      //printf("_copyDatagram:   dg = %p, ts = %u.%09u to %p\n",
       //       dg, dg->time.seconds(), dg->time.nanoseconds(), buf);
 
       // The dg payload is a directory of contributions to the built event.
@@ -167,9 +170,13 @@ namespace Pds {
       const EbDgram** const  last = (const EbDgram**)dg->xtc.next();
       const EbDgram*  const* ctrb = (const EbDgram**)dg->xtc.payload();
       Dgram*                 odg  = new((void*)buf) Dgram(**ctrb); // Not an EbDgram!
+      odg->xtc.src      = XtcData::Src(XtcData::Level::Event);
+      odg->xtc.contains = XtcData::TypeId(XtcData::TypeId::Parent, 0);
       do
       {
         const EbDgram* idg = *ctrb;
+
+        odg->xtc.damage.increase(idg->xtc.damage.value());
 
         buf = (char*)odg->xtc.alloc(idg->xtc.extent);
 
@@ -177,7 +184,7 @@ namespace Pds {
         {
           logging::critical("%s:\n  Datagram is too large (%zd) for buffer of size %d",
                             __PRETTY_FUNCTION__, sizeof(*odg) + odg->xtc.sizeofPayload(), _sizeofBuffers);
-          abort();            // The memcpy would blow by the buffer size limit
+          throw "Fatal: Datagram is too large for buffer"; // The memcpy would blow by the buffer size limit
         }
 
         memcpy(buf, &idg->xtc, idg->xtc.extent);
@@ -185,9 +192,9 @@ namespace Pds {
       while (++ctrb != last);
     }
 
-    virtual void _deleteDatagram(Dgram* dg, int bufIdx)
+    virtual void _deleteDatagram(Dgram* dg, int bufIdx) // Not called for transitions
     {
-      //printf("_deleteDatagram @ %p: ts = %d.%09d\n",
+      //printf("_deleteDatagram @ %p: ts = %u.%09u\n",
       //       dg, dg->time.seconds(), dg->time.nanoseconds());
 
       //if ((bufIdx < 0) || (size_t(bufIdx) >= _bufFreeList.size()))
@@ -198,7 +205,7 @@ namespace Pds {
       unsigned idx = (dg->env >> 16) & 0xff;
       if (idx >= _bufFreeList.size())
       {
-        printf("deleteDatagram: Unexpected index %08x\n", idx);
+        logging::warning("deleteDatagram: Unexpected index %08x", idx);
       }
       //if (idx != bufIdx)
       //{
@@ -209,8 +216,8 @@ namespace Pds {
       {
         if (idx == _bufFreeList.peek(i))
         {
-          printf("Attempted double free of list entry %d: idx %d, bufIdx %d, dg %p, ts %d.%09d\n",
-                 i, idx, bufIdx, dg, dg->time.seconds(), dg->time.nanoseconds());
+          logging::error("Attempted double free of list entry %d: idx %d, bufIdx %d, dg %p, ts %u.%09u",
+                         i, idx, bufIdx, dg, dg->time.seconds(), dg->time.nanoseconds());
           // Does the dg still need to be freed?  Apparently so.
           Pool::free((void*)dg);
           return;
@@ -237,7 +244,7 @@ namespace Pds {
       unsigned data;
       if (_bufFreeList.pop(data))
       {
-        logging::warning("%s:\n  No free buffers available: bufIdx %d", __PRETTY_FUNCTION__, bufIdx);
+        logging::error("%s:\n  No free buffers available: bufIdx %d", __PRETTY_FUNCTION__, bufIdx);
         return;
       }
 
@@ -292,17 +299,13 @@ namespace Pds {
       _eventCount(0),
       _prms      (prms)
     {
-      std::map<std::string, std::string> labels{{"partition", std::to_string(prms.partition)}};
+      std::map<std::string, std::string> labels{{"instrument", prms.instrument},{"partition", std::to_string(prms.partition)}};
       exporter->add("MEB_EvtRt",  labels, MetricType::Rate,    [&](){ return _eventCount;      });
       exporter->add("MEB_EvtCt",  labels, MetricType::Counter, [&](){ return _eventCount;      });
       exporter->add("MEB_EpAlCt", labels, MetricType::Counter, [&](){ return  epochAllocCnt(); });
       exporter->add("MEB_EpFrCt", labels, MetricType::Counter, [&](){ return  epochFreeCnt();  });
       exporter->add("MEB_EvAlCt", labels, MetricType::Counter, [&](){ return  eventAllocCnt(); });
       exporter->add("MEB_EvFrCt", labels, MetricType::Counter, [&](){ return  eventFreeCnt();  });
-      exporter->add("MEB_RxPdg",  labels, MetricType::Gauge,   [&](){ return  rxPending();     });
-      exporter->add("MEB_BufCt",  labels, MetricType::Counter, [&](){ return  bufferCnt();     });
-      exporter->add("MEB_FxUpCt", labels, MetricType::Counter, [&](){ return  fixupCnt();      });
-      exporter->add("MEB_ToEvCt", labels, MetricType::Counter, [&](){ return  tmoEvtCnt();     });
     }
     virtual ~Meb()
     {
@@ -310,16 +313,21 @@ namespace Pds {
   public:
     void run(MyXtcMonitorServer& apps)
     {
-      pinThread(pthread_self(), _prms.core[0]);
-
       logging::info("MEB thread is starting");
+
+      int rc = pinThread(pthread_self(), _prms.core[0]);
+      if (rc != 0)
+      {
+        logging::error("%s:\n  Error from pinThread:\n  %s",
+                       __PRETTY_FUNCTION__, strerror(rc));
+      }
 
       _apps = &apps;
 
       // Create pool for transferring events to MyXtcMonitorServer
       unsigned    entries = std::bitset<64>(_prms.contributors).count();
       size_t      size    = sizeof(Dgram) + entries * sizeof(Dgram*);
-      GenericPool pool(size, _prms.numEvBuffers);
+      GenericPool pool(size, 1 + _prms.numEvBuffers); // +1 for Transitions
       _pool = &pool;
 
       _eventCount = 0;
@@ -378,7 +386,7 @@ namespace Pds {
         _pool->dump();
         printf("Meb::process event dump:\n");
         event->dump(-1);
-        abort();
+        throw "Fatal: Dgram pool exhausted";
       }
 
       Dgram* dg  = new(buffer) Dgram(*(event->creator()));
@@ -388,21 +396,23 @@ namespace Pds {
 
       if (_prms.verbose >= VL_EVENT)
       {
-        uint64_t pid = event->creator()->pulseId();
-        unsigned ctl = dg->control();
-        size_t   sz  = sizeof(*dg) + dg->xtc.sizeofPayload();
-        unsigned src = dg->xtc.src.value();
-        unsigned env = dg->env;
-        printf("MEB processed  %5ld          event  [%5d] @ "
-               "%16p, ctl %02x, pid %014lx, env %08x, sz %6zd, src %2d\n",
-               _eventCount, idx, dg, ctl, pid, env, sz, src);
+        uint64_t    pid = event->creator()->pulseId();
+        unsigned    ctl = dg->control();
+        unsigned    env = dg->env;
+        size_t      sz  = sizeof(*dg) + dg->xtc.sizeofPayload();
+        unsigned    src = dg->xtc.src.value();
+        const char* knd = TransitionId::name(dg->service());
+        printf("MEB processed %5ld %15s  [%5d] @ "
+               "%16p, ctl %02x, pid %014lx, env %08x, sz %6zd, src %2d, ts %u.%09u\n",
+               _eventCount, knd, idx, dg, ctl, pid, env, sz, src, dg->time.seconds(), dg->time.nanoseconds());
       }
 
       if (_apps->events(dg) == XtcMonitorServer::Handled)
       {
-        Pool::free((void*)dg);
+        Pool::free((void*)dg);          // Handled means _deleteDatagram() won't be called
       }
     }
+    void beginrun() { _eventCount = 0; }
   private:
     MyXtcMonitorServer* _apps;
     GenericPool*        _pool;
@@ -536,7 +546,7 @@ std::string MebApp::_configure(const json &msg)
 
   if (_meb)  _meb.reset();
   _meb = std::make_unique<Meb>(_prms, _exporter);
-  int rc = _meb->configure(_prms);
+  int rc = _meb->configure("MEB", _prms, _exporter);
   if (rc)  return std::string("Failed to configure MEB");
 
   _apps = std::make_unique<MyXtcMonitorServer>(_tag, _numEvQueues, _prms);
@@ -579,6 +589,10 @@ void MebApp::handlePhase1(const json& msg)
       _appThread = std::thread(&Meb::run, std::ref(*_meb), std::ref(*_apps));
     }
   }
+  else if (key == "beginrun")
+  {
+    _meb->beginrun();
+  }
 
   // Reply to collection with transition status
   reply(createMsg(key, msg["header"]["msg_id"], getId(), body));
@@ -587,7 +601,6 @@ void MebApp::handlePhase1(const json& msg)
 void MebApp::handleDisconnect(const json &msg)
 {
   lRunning = 0;
-
   if (_appThread.joinable())  _appThread.join();
 
   _apps.reset();
@@ -600,9 +613,11 @@ void MebApp::handleDisconnect(const json &msg)
 void MebApp::handleReset(const json &msg)
 {
   lRunning = 0;
-
   if (_appThread.joinable())  _appThread.join();
+
   _apps.reset();
+
+  if (_exporter)  _exporter.reset();
 }
 
 int MebApp::_parseConnectionParams(const json& body)
@@ -752,11 +767,11 @@ int main(int argc, char** argv)
 {
   const unsigned NO_PARTITION = unsigned(-1u);
   const char*    tag          = 0;
-  std::string    partitionTag;
   std::string    collSrv;
   MebParams      prms { { /* .ifAddr        = */ { }, // Network interface to use
                           /* .ebPort        = */ { },
                           /* .mrqPort       = */ { }, // Unused here
+                          /* .instrument    = */ { },
                           /* .partition     = */ NO_PARTITION,
                           /* .alias         = */ { }, // Unique name passed on cmd line
                           /* .id            = */ -1u,
@@ -788,7 +803,7 @@ int main(int argc, char** argv)
         if (errno != 0 || endPtr == optarg) prms.partition = NO_PARTITION;
         break;
       case 'P':
-        partitionTag = std::string(optarg);
+        prms.instrument = std::string(optarg);
         break;
       case 'n':
         sscanf(optarg, "%d", &prms.numEvBuffers);
@@ -820,7 +835,7 @@ int main(int argc, char** argv)
     }
   }
 
-  logging::init(partitionTag.c_str(), prms.verbose ? LOG_DEBUG : LOG_INFO);
+  logging::init(prms.instrument.c_str(), prms.verbose ? LOG_DEBUG : LOG_INFO);
   logging::info("logging configured");
 
   if (prms.partition == NO_PARTITION)
@@ -828,7 +843,7 @@ int main(int argc, char** argv)
     logging::critical("-p: partition number is mandatory");
     return 1;
   }
-  if (partitionTag.empty())
+  if (prms.instrument.empty())
   {
     logging::critical("-P: instrument name is mandatory");
     return 1;
@@ -854,11 +869,11 @@ int main(int argc, char** argv)
   {
     // The problem is that there are only 8 bits available in the env
     // Could use the lower 24 bits, but then we have a nonstandard env
-    logging::critical("%s:\n  Number of event buffers > 255 is currently not supported: got %d\n", prms.numEvBuffers);
+    logging::critical("%s:\n  Number of event buffers > 255 is not supported: got %d", prms.numEvBuffers);
     return 1;
   }
 
-  if (!tag)  tag = partitionTag.c_str();
+  if (!tag)  tag = prms.instrument.c_str();
   logging::info("Partition Tag: '%s'", tag);
 
   struct sigaction sigAction;
@@ -867,14 +882,22 @@ int main(int argc, char** argv)
   sigAction.sa_flags   = SA_RESTART;
   sigemptyset(&sigAction.sa_mask);
   if (sigaction(SIGINT, &sigAction, &lIntAction) > 0)
-    logging::error("Failed to set up ^C handler");
+    logging::warning("Failed to set up ^C handler");
 
-  MebApp app(collSrv, tag, nevqueues, ldist, prms);
+  try
+  {
+    MebApp app(collSrv, tag, nevqueues, ldist, prms);
 
-  try                        { app.run(); }
+    app.run();
+
+    app.handleReset(json({}));
+
+    return 0;
+  }
   catch (std::exception& e)  { logging::critical("%s", e.what()); }
+  catch (std::string& e)     { logging::critical("%s", e.c_str()); }
+  catch (char const* e)      { logging::critical("%s", e); }
+  catch (...)                { logging::critical("Default exception"); }
 
-  app.handleReset(json({}));
-
-  return 0;
+  return EXIT_FAILURE;
 }

@@ -3,11 +3,6 @@
 
 #include "xtcdata/xtc/Dgram.hh"
 
-#ifdef NDEBUG
-//#undef NDEBUG
-#endif
-
-#include <cassert>
 #include <new>
 #include <stdlib.h>
 
@@ -38,6 +33,7 @@ EbEvent::EbEvent(uint64_t        contract,
                  EbEvent*        after,
                  const EbDgram*  cdg,
                  unsigned        prm) :
+  t0       (fast_monotonic_clock::now()), // Revisit: Temporary?
   _contract (contract),
   _living   (MaxTimeouts),
   _prm      (prm),
@@ -49,7 +45,15 @@ EbEvent::EbEvent(uint64_t        contract,
   _size      = cdg->xtc.sizeofPayload();
 
   _remaining = contract & ~(1ul << cdg->xtc.src.value());
-  assert(_remaining != contract);       // Make sure some bit was taken down
+  if (_remaining == contract)           // Make sure some bit was taken down
+  {
+    fprintf(stderr, "%s:\n  Source %d isn't in contract %016lx "
+            "for %s @ %p, PID %014lx, RoGs %04hx\n",
+            __PRETTY_FUNCTION__, cdg->xtc.src.value(), contract,
+            TransitionId::name(cdg->service()), cdg, cdg->pulseId(),
+            cdg->readoutGroups());
+    throw "Fatal: _remaining == contract";
+  }
 
   connect(after);
 }
@@ -105,7 +109,15 @@ EbEvent* EbEvent::_add(const EbDgram* cdg)
 
   uint64_t remaining = _remaining;
   _remaining = remaining & ~(1ul << cdg->xtc.src.value());
-  assert(_remaining != remaining);      // Make sure some bit was taken down
+  if (_remaining == remaining)          // Make sure some bit was taken down
+  {
+    fprintf(stderr, "%s:\n  Source %d didn't affect remaining %016lx "
+            "for %s @ %p, PID %014lx, RoGs %04hx, contract %016lx\n",
+            __PRETTY_FUNCTION__, cdg->xtc.src.value(), remaining,
+            TransitionId::name(cdg->service()), cdg, cdg->pulseId(),
+            cdg->readoutGroups(), _contract);
+    throw "Fatal: _remaining == remaining";
+  }
 
   _damage.increase(cdg->xtc.damage.value());
 

@@ -30,20 +30,18 @@ class EbReceiver : public Pds::Eb::EbCtrbInBase
 public:
     EbReceiver(const Parameters& para, Pds::Eb::TebCtrbParams& tPrms, MemPool& pool,
                ZmqSocket& inprocSend, Pds::Eb::MebContributor* mon,
-               const std::shared_ptr<MetricExporter>& exporter);
-    ~EbReceiver();
+               const std::shared_ptr<Pds::MetricExporter>& exporter);
     void process(const Pds::Eb::ResultDgram& result, const void* input) override;
 public:
     void resetCounters();
-    std::string openFiles(const Parameters& para, const RunInfo& runInfo);
+    std::string openFiles(const Parameters& para, const RunInfo& runInfo, std::string hostname);
     std::string closeFiles();
 private:
     void _writeDgram(XtcData::Dgram* dgram);
-    XtcData::Dgram* _configureDgram() {return static_cast<XtcData::Dgram*>(m_configureBuffer);}
 private:
     MemPool& m_pool;
     Pds::Eb::MebContributor* m_mon;
-    BufferedFileWriter m_fileWriter;
+    BufferedFileWriterMT m_fileWriter;
     SmdWriter m_smdWriter;
     bool m_writing;
     ZmqSocket& m_inprocSend;
@@ -56,7 +54,8 @@ private:
     XtcData::TransitionId::Value m_lastTid;
     uint64_t m_offset;
     unsigned m_nodeId;
-    void* m_configureBuffer;
+    std::vector<uint8_t> m_configureBuffer;
+    uint64_t m_damage;
 };
 
 class DrpBase
@@ -64,6 +63,7 @@ class DrpBase
 public:
     DrpBase(Parameters& para, ZmqContext& context);
     void shutdown();
+    void reset();
     nlohmann::json connectionInfo();
     std::string connect(const nlohmann::json& msg, size_t id);
     std::string configure(const nlohmann::json& msg);
@@ -76,6 +76,7 @@ public:
     prometheus::Exposer* exposer() {return m_exposer.get();}
     unsigned nodeId() const {return m_nodeId;}
     const Pds::Eb::TebCtrbParams& tebPrms() const {return m_tPrms;}
+    void stop() { if (m_tebContributor)  m_tebContributor->stop(); }
     MemPool pool;
 private:
     int setupTriggerPrimitives(const nlohmann::json& body);
@@ -86,15 +87,16 @@ private:
     Pds::Eb::TebCtrbParams m_tPrms;
     Pds::Eb::MebCtrbParams m_mPrms;
     std::unique_ptr<Pds::Eb::TebContributor> m_tebContributor;
-    std::unique_ptr<Pds::Eb::MebContributor> m_meb;
+    std::unique_ptr<Pds::Eb::MebContributor> m_mebContributor;
     std::unique_ptr<EbReceiver> m_ebRecv;
     std::unique_ptr<prometheus::Exposer> m_exposer;
-    std::shared_ptr<MetricExporter> m_exporter;
+    std::shared_ptr<Pds::MetricExporter> m_exporter;
     ZmqSocket m_inprocSend;
     nlohmann::json m_connectMsg;
     size_t m_collectionId;
     Pds::Trg::Factory<Pds::Trg::TriggerPrimitive> m_trigPrimFactory;
     Pds::Trg::TriggerPrimitive* m_triggerPrimitive;
+    std::string m_hostname;
 };
 
 }

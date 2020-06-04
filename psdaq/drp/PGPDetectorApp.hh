@@ -1,6 +1,7 @@
 #pragma once
 
 #include <thread>
+#include <Python.h>
 #include "DrpBase.hh"
 #include "PGPDetector.hh"
 #include "psdaq/trigger/TriggerPrimitive.hh"
@@ -13,6 +14,7 @@ class PGPDetectorApp : public CollectionApp
 {
 public:
     PGPDetectorApp(Parameters& para);
+    virtual ~PGPDetectorApp();
     nlohmann::json connectionInfo() override;
     void handleReset(const nlohmann::json& msg) override;
 private:
@@ -26,9 +28,9 @@ private:
     std::thread m_collectorThread;
     std::unique_ptr<PGPDetector> m_pgpDetector;
     Detector* m_det;
-    Pds::Trg::Factory<Pds::Trg::TriggerPrimitive> m_trigPrimFactory;
-    std::shared_ptr<MetricExporter> m_exporter;
+    std::shared_ptr<Pds::MetricExporter> m_exporter;
     bool m_unconfigure;
+    PyThreadState*    m_pysave;
 };
 
 }

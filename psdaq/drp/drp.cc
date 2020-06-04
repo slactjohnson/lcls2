@@ -1,7 +1,7 @@
 #include <getopt.h>
 #include <sstream>
 #include <iostream>
-#include <Python.h>
+#include <algorithm>
 #include "drp.hh"
 #include "PGPDetectorApp.hh"
 #include "rapidjson/document.h"
@@ -12,15 +12,16 @@ using json = nlohmann::json;
 void get_kwargs(Drp::Parameters& para, const std::string& kwargs_str) {
     std::istringstream ss(kwargs_str);
     std::string kwarg;
-    std::string::size_type pos = 0;
     while (getline(ss, kwarg, ',')) {
-        pos = kwarg.find("=", pos);
+        kwarg.erase(std::remove(kwarg.begin(), kwarg.end(), ' '), kwarg.end());
+        auto pos = kwarg.find("=", 0);
         if (!pos) {
+            logging::critical("Keyword argument with no equal sign");
             throw "drp.cc error: keyword argument with no equal sign: "+kwargs_str;
         }
         std::string key = kwarg.substr(0,pos);
         std::string value = kwarg.substr(pos+1,kwarg.length());
-        //cout << kwarg << " " << key << " " << value << endl;
+        //std::cout << "kwarg = '" << kwarg << "' key = '" << key << "' value = '" << value << "'" << std::endl;
         para.kwargs[key] = value;
     }
 }
@@ -29,13 +30,9 @@ int main(int argc, char* argv[])
 {
     Drp::Parameters para;
     int c;
-    para.partition = -1;
-    para.detSegment = 0;
     std::string kwargs_str;
     std::string::size_type ii = 0;
-    para.verbose = 0;
-    char *instrument = NULL;
-    while((c = getopt(argc, argv, "p:o:l:D:C:d:u:k:P:T::M:v")) != EOF) {
+    while((c = getopt(argc, argv, "p:o:l:D:S:C:d:u:k:P:T::M:v")) != EOF) {
         switch(c) {
             case 'p':
                 para.partition = std::stoi(optarg);
@@ -47,7 +44,10 @@ int main(int argc, char* argv[])
                 para.laneMask = std::stoul(optarg, nullptr, 16);
                 break;
             case 'D':
-                para.detectorType = optarg;
+                para.detType = optarg;
+                break;
+            case 'S':
+                para.serNo = optarg;
                 break;
             case 'u':
                 para.alias = optarg;
@@ -79,7 +79,7 @@ int main(int argc, char* argv[])
                 ++para.verbose;
                 break;
             default:
-                exit(1);
+                return 1;
         }
     }
 
@@ -91,26 +91,26 @@ int main(int argc, char* argv[])
     // Check required parameters
     if (para.instrument.empty()) {
         logging::critical("-P: instrument name is mandatory");
-        exit(1);
+        return 1;
     }
     if (para.partition == unsigned(-1)) {
         logging::critical("-p: partition is mandatory");
-        exit(1);
+        return 1;
     }
     if (para.device.empty()) {
         logging::critical("-d: device is mandatory");
-        exit(1);
+        return 1;
     }
     if (para.alias.empty()) {
         logging::critical("-u: alias is mandatory");
-        exit(1);
+        return 1;
     }
 
     // Alias must be of form <detName>_<detSegment>
     size_t found = para.alias.rfind('_');
     if ((found == std::string::npos) || !isdigit(para.alias.back())) {
         logging::critical("-u: alias must have _N suffix");
-        exit(1);
+        return 1;
     }
     para.detName = para.alias.substr(0, found);
     para.detSegment = std::stoi(para.alias.substr(found+1, para.alias.size()));
@@ -119,11 +119,20 @@ int main(int argc, char* argv[])
 
     para.nworkers = 10;
     para.batchSize = 32; // Must be a power of 2
-    para.maxTrSize = 256 * 1024;
-    Py_Initialize(); // for use by configuration
-    Drp::PGPDetectorApp app(para);
-    app.run();
-    app.handleReset(json({}));
-    Py_Finalize(); // for use by configuration
-    std::cout<<"end of main drp\n";
+    para.maxTrSize = 4 * 1024 * 1024;
+    para.nTrBuffers = 8; // Power of 2 greater than the maximum number of
+                         // transitions in the system at any given time, e.g.,
+                         // MAX_LATENCY * (SlowUpdate rate), in same units
+    try {
+        Drp::PGPDetectorApp app(para);
+        app.run();
+        app.handleReset(json({}));
+        std::cout<<"end of drp main\n";
+        return 0;
+    }
+    catch (std::exception& e)  { logging::critical("%s", e.what()); }
+    catch (std::string& e)     { logging::critical("%s", e.c_str()); }
+    catch (char const* e)      { logging::critical("%s", e); }
+    catch (...)                { logging::critical("Default exception"); }
+    return EXIT_FAILURE;
 }

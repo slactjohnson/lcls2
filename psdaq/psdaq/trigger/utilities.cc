@@ -26,7 +26,7 @@ int Pds::Trg::fetchDocument(const std::string& connectMsg,
   int rc = -1;
 
   // returns new reference
-  PyObject* pModule = PyImport_ImportModule("psalg.configdb.get_config");
+  PyObject* pModule = PyImport_ImportModule("psdaq.configdb.get_config");
   if (!failed(pModule))
   {
     // returns borrowed reference
@@ -38,7 +38,7 @@ int Pds::Trg::fetchDocument(const std::string& connectMsg,
       if (!failed(pFunc))
       {
         // returns new reference
-        PyObject* mybytes = PyObject_CallFunction(pFunc, "sss", connectMsg.c_str(), configAlias.c_str(), detName.c_str());
+        PyObject* mybytes = PyObject_CallFunction(pFunc, "sssi", connectMsg.c_str(), configAlias.c_str(), detName.c_str(), 0);
         if (!failed(mybytes))
         {
           // returns new reference

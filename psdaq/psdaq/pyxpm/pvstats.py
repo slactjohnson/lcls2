@@ -313,6 +313,7 @@ class GroupStats(object):
         self._pv_l0AccRate = addPVF('L0AccRate')
         self._pv_l1Rate    = addPVF('L1Rate')
         self._pv_numL0Inp  = addPVF('NumL0Inp')
+        self._pv_numL0Inh  = addPVF('NumL0Inh')
         self._pv_numL0Acc  = addPVF('NumL0Acc')
         self._pv_numL1     = addPVF('NumL1')
         self._pv_deadFrac  = addPVF('DeadFrac')
@@ -354,19 +355,28 @@ class GroupStats(object):
                     l0InpRate = dnumL0/dt
                     l0AccRate = dnumL0Acc/dt
                     updatePv(self._pv_deadTime, dL0Inh/dL0Ena)
-                    linkInhEvReg = self._app.inhEvCnt.get()
-                    linkInhEv = []
-                    for i in range(32):
-                        linkInh = (linkInhEvReg>>(32*i))&0xffffffff
-                        linkInhEv.append((linkInh - self._linkInhEv[i])/dL0Ena)
-                        self._linkInhEv[i] = linkInh
-                    updatePv(self._pv_deadFLink, linkInhEv)
+                    #   
+                    #  Choose the time based calculation instead
+                    #    More intuitive, updates when not running
+                    #
+                    if False:
+                        linkInhEvReg = self._app.inhEvCnt.get()
+                        linkInhEv = []
+                        for i in range(32):
+                            linkInh = (linkInhEvReg>>(32*i))&0xffffffff
+                            if dnumL0:
+                                linkInhEv.append((linkInh - self._linkInhEv[i])/dnumL0)
+                            else:
+                                linkInhEv.append(0)
+                            self._linkInhEv[i] = linkInh
+                        updatePv(self._pv_deadFLink, linkInhEv)
                 else:
                     l0InpRate = 0
                     l0AccRate = 0
                 updatePv(self._pv_l0InpRate, l0InpRate)
                 updatePv(self._pv_l0AccRate, l0AccRate)
                 updatePv(self._pv_numL0Inp, numL0)
+                updatePv(self._pv_numL0Inh, numL0Inh)
                 updatePv(self._pv_numL0Acc, numL0Acc)
                 if dnumL0:
                     deadFrac = dnumL0Inh/dnumL0
@@ -380,7 +390,8 @@ class GroupStats(object):
                 self._numL0Acc= numL0Acc
                 self._numL0Inh= numL0Inh
                 
-        else:
+        #else:
+        if True:
             nfid = (timeval - self._timeval)/FID_PERIOD_NS
             linkInhTmReg = self._app.inhTmCnt.get()
             if linkInhTmReg is not None:
@@ -428,7 +439,7 @@ class PVStats(object):
         self._cuTiming = TimingStatus(name+':Cu',xpm.CuTiming)
         self._cuGen    = CuStatus(name+':XTPG',xpm.CuGenerator,xpm.CuToScPhase)
         self._monClks  = MonClkStatus(name,self._app)
-        self._sfpStat  = SFPStatus   (name+':SFPSTATUS',self._xpm)
+        #self._sfpStat  = SFPStatus   (name+':SFPSTATUS',self._xpm)
 
         self.paddr   = addPV(name+':PAddr'  ,'I',self._app.paddr.get())
         self.fwbuild = addPV(name+':FwBuild','s',self._xpm.AxiVersion.BuildStamp.get())
@@ -453,8 +464,7 @@ class PVStats(object):
             self._cuTiming.update()
             self._cuGen   .update()
             self._monClks .update()
-##  Remove while we test Ben's image
-            self._sfpStat .update()
+            #self._sfpStat .update()
         except:
             exc = sys.exc_info()
             if exc[0]==KeyboardInterrupt:

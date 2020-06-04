@@ -1,8 +1,14 @@
 find_package(PythonLibs REQUIRED)
 
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 add_library(drpbase
+    BEBDetector.cc
+    XpmDetector.cc
     DrpBase.cc
     FileWriter.cc
+    Si570.cc
 )
 
 target_include_directories(drpbase PUBLIC
@@ -17,11 +23,15 @@ target_link_libraries(drpbase
 )
 
 add_executable(drp
-    XpmDetector.cc
     AreaDetector.cc
     Digitizer.cc
     TimingSystem.cc
     TimeTool.cc
+    Wave8.cc
+    Opal.cc
+#    OpalTT.cc
+    OpalTTFex.cc
+#    OpalTTSim.cc
     PGPDetector.cc
     PGPDetectorApp.cc
     drp.cc
@@ -29,8 +39,9 @@ add_executable(drp
 
 target_link_libraries(drp
     psalg::digitizer
+    psalg::detector
     xtcdata::xtc
-    pthread
+    Threads::Threads
     drpbase
     trigger
 )
@@ -43,6 +54,7 @@ target_link_libraries(drp_bld
     drpbase
     trigger
     epicstools
+    readline
 )
 
 add_executable(drp_pva
@@ -53,6 +65,7 @@ target_link_libraries(drp_pva
     drpbase
     trigger
     epicstools
+    readline
 )
 
 add_executable(configdb_obj_2xtc
@@ -94,6 +107,7 @@ target_include_directories(pgpread PUBLIC
 )
 target_link_libraries(pgpread
     xtcdata::xtc
+    Threads::Threads
 )
 
 add_executable(pgpread_timetool
@@ -110,6 +124,8 @@ target_link_libraries(pgpread_timetool
     service
     xtcdata::xtc
     ${PYTHON_LIBRARIES}
+    Threads::Threads
+    rt
 )
 
 add_executable(AxiBatcherParserTest
@@ -135,8 +151,21 @@ target_include_directories(drp_validate PUBLIC
      ../psdaq/pgp/aes-stream-drivers/include
  )
  target_link_libraries(drp_validate
-     pthread
+     Threads::Threads
  )
+
+add_executable(opaltt_test
+    opaltt_test.cc
+)
+
+target_include_directories(opaltt_test PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}>
+)
+
+target_link_libraries(opaltt_test
+    xtcdata::xtc
+)
+
 
 install(TARGETS drp drp_bld drp_pva
   ARCHIVE DESTINATION lib

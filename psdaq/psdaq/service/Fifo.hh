@@ -178,11 +178,14 @@ namespace Pds
   class FifoW : public Fifo<T>
   {
   public:
-    FifoW();
+    FifoW(size_t size);
   public:
     bool push(const T& item);
+    bool pop(T& item);
     void pend() const;
     void pend(const std::chrono::milliseconds& tmo) const;
+    void pendn() const;
+    void pendn(const std::chrono::milliseconds& tmo) const;
   private:
     mutable L               _lock;
     std::condition_variable _cv;
@@ -192,8 +195,8 @@ namespace Pds
 
 template <class T, class L>
 inline
-Pds::FifoW<T, L>::FifoW() :
-  Fifo<T>(),
+Pds::FifoW<T, L>::FifoW(size_t size) :
+  Fifo<T>(size),
   _lock(),
   _cv()
 {
@@ -213,10 +216,22 @@ bool Pds::FifoW<T, L>::push(const T& item)
 
 template <class T, class L>
 inline
+bool Pds::FifoW<T, L>::pop(T& item)
+{
+  std::lock_guard<L> lock(_lock);
+
+  bool isempty = Fifo<T>::pop(item);
+  _cv.notify_one();
+
+  return isempty;
+}
+
+template <class T, class L>
+inline
 void Pds::FifoW<T, L>::pend() const
 {
   std::unique_lock<L> lock(_lock);
-  _cv.wait(lock, [this] { return !Fifo<T>::empty(); }); // Block when empty
+  const_cast<std::condition_variable&>(_cv).wait(lock, [this] { return !Fifo<T>::empty(); }); // Block when empty
 }
 
 template <class T, class L>
@@ -224,7 +239,25 @@ inline
 void Pds::FifoW<T, L>::pend(const std::chrono::milliseconds& tmo) const
 {
   std::unique_lock<L> lock(_lock);
-  _cv.wait_for(lock, tmo, [this] { return !Fifo<T>::empty(); }); // Block when empty
+  const_cast<std::condition_variable&>(_cv).wait_for(lock, tmo, [this] { return !Fifo<T>::empty(); }); // Block when empty
 }
+
+template <class T, class L>
+inline
+void Pds::FifoW<T, L>::pendn() const
+{
+  std::unique_lock<L> lock(_lock);
+  const_cast<std::condition_variable&>(_cv).wait(lock, [this] { return Fifo<T>::empty(); }); // Block when not empty
+}
+
+template <class T, class L>
+inline
+void Pds::FifoW<T, L>::pendn(const std::chrono::milliseconds& tmo) const
+{
+  std::unique_lock<L> lock(_lock);
+  const_cast<std::condition_variable&>(_cv).wait_for(lock, tmo, [this] { return Fifo<T>::empty(); }); // Block when not empty
+}
+
+
 
 #endif

@@ -27,7 +27,7 @@ class ConstantsStore(object):
         self.cwd = self.cwd[:self.cwd.rfind('/')]
     def typeok(self,obj,name):
         '''check if we support serializing this type to hdf'''
-        allowed = [dict,int,float,str,numpy.ndarray]
+        allowed = [dict,int,float,bool,str,numpy.ndarray]
         return type(obj) in allowed
     def storevalue(self,v,name):
         '''persist one of the supported types to the hdf file'''
@@ -84,9 +84,9 @@ class ConstantsLoad(object):
                 self.setval(remainder,getattr(obj,dictname))
         else:
             if type(obj) is dict:
-                obj[name]=self.f[self.fullname].value
+                obj[name]=self.f[self.fullname][()] #.value
             else:
-                setattr(obj,name,self.f[self.fullname].value)
+                setattr(obj,name,self.f[self.fullname][()]) #.value)
     def loadCallBack(self,name,obj):
         '''called back by h5py routine visititems for each
         item (group/dataset) in the h5 file'''

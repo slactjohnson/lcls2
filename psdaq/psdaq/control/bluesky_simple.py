@@ -28,6 +28,7 @@
 
 from bluesky import RunEngine
 from ophyd.status import Status
+import sys
 import threading
 import zmq
 import asyncio
@@ -37,7 +38,7 @@ from psdaq.control.control import DaqControl
 import argparse
 
 class MyDAQ:
-    def __init__(self, control, motor):
+    def __init__(self, control, motor, *, daqState):
         self.control = control
         self.name = 'mydaq'
         self.parent = None
@@ -50,7 +51,7 @@ class MyDAQ:
         self.mon_thread = threading.Thread(target=self.daq_monitor_thread, args=(), daemon=True)
         self.ready = threading.Event()
         self.motor = motor
-        self.daqState = 'noconnect'
+        self.daqState = daqState
         self.daqState_cv = threading.Condition()
         self.comm_thread.start()
         self.mon_thread.start()
@@ -87,23 +88,23 @@ class MyDAQ:
     def daq_communicator_thread(self):
         print('*** daq_communicator_thread')
         while True:
-            state = self.pull_socket.recv()
+            state = self.pull_socket.recv().decode("utf-8")
             print('*** received',state)
-            if state==b'starting':
-                # send 'daqstate(starting)' and wait for complete
+            if state in ('connected', 'starting'):
+                # send 'daqstate(state)' and wait for complete
                 # we can block here since we are not in the bluesky
                 # event loop
-                errMsg = self.control.setState('starting')
+                errMsg = self.control.setState(state)
                 if errMsg is not None:
                     print('*** error:', errMsg)
                     continue
                 with self.daqState_cv:
-                    while self.daqState != 'starting':
-                        print('daqState \'%s\', waiting for \'starting\'...' % self.daqState)
+                    while self.daqState != state:
+                        print('daqState \'%s\', waiting for \'%s\'...' % (self.daqState, state))
                         self.daqState_cv.wait(1.0)
                     print('daqState \'%s\'' % self.daqState)
                 self.ready.set()
-            elif state==b'running':
+            elif state=='running':
                 # launch the step with 'daqstate(running)' (with the
                 # scan values for the daq to record to xtc2).
                 # normally should block on "complete" from the daq here.
@@ -119,7 +120,7 @@ class MyDAQ:
                 # tell bluesky step is complete
                 # this line is needed in ReadableDevice mode to flag completion
                 self.status._finished(success=True)
-            elif state==b'shutdown':
+            elif state=='shutdown':
                 break
 
     def daq_monitor_thread(self):
@@ -141,8 +142,6 @@ class MyDAQ:
     def trigger(self):
         # do one step
         self.status = Status()
-        self.status.done = False
-        self.status.success = False
         # tell the control level to do a step in the scan
         # to-do: pass it the motor positions, ideally both
         # requested/measured positions.
@@ -153,37 +152,9 @@ class MyDAQ:
         # this dict should be put into beginstep phase1 json
         motor_dict = {'motor1':self.motor.position,
                       'motor2':self.motor.position}
-        self.push_socket.send_string('running')
+        self.push_socket.send_string('running')     # BeginStep
+        self.push_socket.send_string('starting')    # EndStep
         return self.status
-
-    # for the FlyableDevice style, which we don't use for the DAQ
-    # since we only get one kickoff call for all steps in the scan
-    def kickoff(self):
-        # do one step
-        print('*** here in kickoff')
-        self.status = Status()
-        self.status.done = True
-        self.status.success = True
-        # tell the control level to start the scan
-        self.push_socket.send_string('step')
-        return self.status
-
-    # for the FlyableDevice style
-    def complete(self):
-        print('*** here in complete')
-        time.sleep(3)
-        self.status = Status()
-        self.status.done = True
-        self.status.success = True
-        return self.status
-
-    # for the FlyableDevice style
-    def collect(self):
-        return {}
-
-    # for the FlyableDevice style
-    def describe_collect(self):
-        return {}
 
     def read_configuration(self):
         # done at the first read after a configure
@@ -196,18 +167,26 @@ class MyDAQ:
     def configure(self, *args, **kwargs):
         return (self.read_configuration(),self.read_configuration())
 
-    def stage(self):
-        # done once at start of scan
-        # put the daq into the right state ('starting')
-        print('*** here in stage')
-        self.push_socket.send_string('starting')
+    def _set_connected(self):
+        self.push_socket.send_string('connected')
         # wait for complete. is this a coroutine, so we shouldn't block?
         self.ready.wait()
         self.ready.clear()
-        
+
+    def stage(self):
+        # done once at start of scan
+        # put the daq into the right state ('connected')
+        print('*** here in stage')
+        self._set_connected()
+
         return [self]
 
     def unstage(self):
+        # done once at end of scan
+        # put the daq into the right state ('connected')
+        print('*** here in unstage')
+        self._set_connected()
+        
         return [self]
 
 def main():
@@ -225,6 +204,12 @@ def main():
 
     # instantiate DaqControl object
     control = DaqControl(host=args.C, platform=args.p, timeout=args.t)
+
+    # get initial DAQ state
+    daqState = control.getState()
+    print('initial state: %s' % daqState)
+    if daqState == 'error':
+        sys.exit(1)
 
     config = None
     if args.config:
@@ -255,7 +240,7 @@ def main():
     from bluesky.plans import scan, count
     from bluesky.preprocessors import fly_during_wrapper
 
-    mydaq = MyDAQ(control,motor)
+    mydaq = MyDAQ(control,motor, daqState=daqState)
     dets = [mydaq]   # just one in this case, but it could be more than one
 
     print('motor',motor.position,motor.name) # in some cases we have to look at ".value"

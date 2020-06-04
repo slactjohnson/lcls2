@@ -3,6 +3,8 @@ import os
 import IPython
 
 from psana import DataSource
+from psana.pyalgos.generic.edgefinder import EdgeFinder
+import matplotlib.pyplot as plt
 
 def twos_complement(hexstr,bits):
     value = int(hexstr,16)
@@ -18,6 +20,7 @@ def get_fir_coefficients(myrun):
         my_kernel.extend([twos_complement(mystring[i:i+2],8) for i in range(0,len(mystring),2)])
 
     return my_kernel
+
 def test_timetool():
 
     firmware_edges = []
@@ -33,7 +36,6 @@ def test_timetool():
 
     for nevt,evt in enumerate(myrun.events()):
         parsed_frame_object = tt_detector_object.ttalg.parsed_frame(evt)
-
 
         image = tt_detector_object.ttalg._image(evt)
 
@@ -59,8 +61,42 @@ def test_timetool():
     print("covariance  = ",my_cov[0,1]/my_cov[0,0])
     assert nevt==1324
 
+
+def test_timetool_psana(plot=False):
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    ds = DataSource(files=os.path.join(dir_path,'test_timetool_psana.xtc2'))
+
+    myrun = next(ds.runs())
+    det = myrun.Detector('tmott')
+    edge_finder = EdgeFinder(det.calibconst)
+    edet = myrun.Detector('IIR')
+
+    # TODO: Add first pass get all the backgrounds
+    
+    # Second pass - finding edges from given backgrounds and good image
+    for nevt,evt in enumerate(myrun.events()):
+        image = det.ttalg.image(evt)
+        
+        if image is None: continue
+        result = edge_finder(image, edet(evt))
+        
+        if plot:
+            plt.plot(image/np.max(image), label="signal")
+            plt.plot(result.convolved, label="convolution result")
+            plt.plot(result.edge, result.amplitude, "x")
+            plt.hlines(*result.results_half[1:], color="C2")
+            plt.title(f'edge_pos={result.edge:d} fwhm={result.fwhm:.2f} ampl={result.amplitude:.2f} ampl_next={result.amplitude_next:.2f} ref_ampl={result.ref_amplitude:.2f}')
+            plt.legend()
+            plt.xlabel('pixel number')
+            plt.ylabel('normalized signal')
+            plt.show()
+
+
+    assert nevt==1324
+
 if __name__ == "__main__":
     test_timetool()
+    test_timetool_psana(plot=False)
 
 """
 import numpy as np

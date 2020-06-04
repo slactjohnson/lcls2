@@ -8,10 +8,15 @@
 #include "psdaq/service/GenericPoolW.hh"
 #include "psdaq/service/Collection.hh"
 #include "psdaq/service/MetricExporter.hh"
-#include "xtcdata/xtc/Dgram.hh"
+#include "psdaq/service/EbDgram.hh"
+
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 
 #include <stdio.h>
 #include <unistd.h>
+#include <cassert>
 #include <climits>
 #include <cstdlib>
 #include <cstring>
@@ -35,7 +40,7 @@ using json = nlohmann::json;
 static const unsigned CLS              = 64;   // Cache Line Size
 static const int      CORE_0           = 18;   // devXXX: 11, devXX:  7, accXX:  9
 static const int      CORE_1           = 19;   // devXXX: 12, devXX: 19, accXX: 21
-static const size_t   HEADER_SIZE      = sizeof(EbDgram);
+static const size_t   HEADER_SIZE      = sizeof(Pds::EbDgram);
 static const size_t   INPUT_EXTENT     = 2;    // Revisit: Number of "L3" input  data words
 static const size_t   RESULT_EXTENT    = 2;    // Revisit: Number of "L3" result data words
 static const size_t   MAX_CONTRIB_SIZE = HEADER_SIZE + INPUT_EXTENT  * sizeof(uint32_t);
@@ -58,8 +63,10 @@ void sigHandler( int signal )
 
   if (callCount++)
   {
-    fprintf(stderr, "Aborting on 2nd ^C...\n");
-    ::abort();
+    fprintf(stderr, "Aborting on 2nd ^C\n");
+
+    sigaction(signal, &lIntAction, NULL);
+    raise(signal);
   }
 }
 
@@ -72,13 +79,13 @@ namespace Pds {
     class Input : public EbDgram
     {
     public:
-      Input() : EbDgram() {}
-        Input(uint64_t pulse_id, const TimeStamp& time_, const Xtc& xtc_) :
-        EbDgram()
+      //Input() : EbDgram() {}
+      Input(uint64_t pulse_id, const Transition& tr, const Xtc& xtc_) :
+        EbDgram(PulseId(pulse_id), Dgram())
       {
-        time = time_;
+        time = tr.time;
+        env  = tr.env;
         xtc  = xtc_;
-        _value = pulse_id
       }
     public:
       PoolDeclare;
@@ -103,7 +110,7 @@ namespace Pds {
     private:
       const size_t                     _maxEvtSz;
       uint16_t                         _readoutGroup;
-      const Xtc                        _xtc;
+      Xtc                              _xtc;
       uint64_t                         _pid;
       //GenericPoolW*                    _pool;
       GenericPool*                     _pool;
@@ -185,15 +192,15 @@ void DrpSim::startup(unsigned id, void** base, size_t* size, uint16_t readoutGro
   _allocPending = 0;
   _readoutGroup = readoutGroup;
 
-  const_cast<Xtc&>(_xtc) = Xtc(TypeId(TypeId::Data, 0), Src(id));
+  _xtc = Xtc(TypeId(TypeId::Data, 0), Src(id));
 
   // Avoid going into resource wait by configuring more events in the pool than
   // are necessary to fill all the batches in the batch pool, i.e., make the
   // system run out of batches before it runs out of events
-  assert(_pool == nullptr);
+  if (_pool)  throw "Fatal: _pool != nullptr";
   //_pool = new GenericPoolW(sizeof(Entry) + _maxEvtSz, (MAX_BATCHES + 1) * MAX_ENTRIES, CLS);
   _pool = new GenericPool(sizeof(Entry) + _maxEvtSz, (MAX_BATCHES + 1) * MAX_ENTRIES, CLS);
-  assert(_pool);
+  if (!_pool)  throw "Fatal: _pool == nullptr";
 
   *base = _pool->buffer();
   *size = _pool->size();
@@ -226,7 +233,7 @@ void DrpSim::shutdown()
 int DrpSim::transition(TransitionId::Value transition, uint64_t pid)
 {
   std::unique_lock<std::mutex> lock(_trLock);
-  _trPid      = pid & ((1ul << PulseId::NumPulseIdBits) - 1);
+  _trPid      = pid & ((1ul << 56) - 1); // Revisit: PulseId::NumPulseIdBits
   _transition = transition;
   _trCv.notify_one();
   return 0;
@@ -288,16 +295,19 @@ const EbDgram* DrpSim::generate()
   clock_gettime(CLOCK_MONOTONIC, &ts);
   const Transition tr(Dgram::Event, _trId, TimeStamp(ts), _readoutGroup);
 
-  Input* idg = ::new(buffer) Input(_pid, TimeStamp(ts), _xtc);
+  Input* idg = ::new(buffer) Input(_pid, tr, _xtc);
 
-  size_t inputSize = INPUT_EXTENT * sizeof(uint32_t);
-
-  // Here is where trigger input information is inserted into the datagram
+  if (idg->isEvent())
   {
-    uint32_t* payload = (uint32_t*)idg->xtc.alloc(inputSize);
-    payload[WRT_IDX] = (_pid %   3) == 0 ? 0xdeadbeef : 0xabadcafe;
-    payload[MON_IDX] = (_pid % 119) == 0 ? 0x12345678 : 0;
-    //payload[MON_IDX] = _pid & (131072 - 1);
+    size_t inputSize = INPUT_EXTENT * sizeof(uint32_t);
+
+    // Here is where trigger input information is inserted into the datagram
+    {
+      uint32_t* payload = (uint32_t*)idg->xtc.alloc(inputSize);
+      payload[WRT_IDX] = (_pid %   3) == 0 ? 0xdeadbeef : 0xabadcafe;
+      payload[MON_IDX] = (_pid % 119) == 0 ? 0x12345678 : 0;
+      //payload[MON_IDX] = _pid & (131072 - 1);
+    }
   }
 
 #ifdef SINGLE_EVENTS
@@ -325,7 +335,7 @@ const EbDgram* DrpSim::generate()
 
 void DrpSim::release(const Input* input)
 {
-  if (!input->seq.isEvent())
+  if (!input->isEvent())
   {
     std::lock_guard<std::mutex> lock(_compLock);
     _released = true;
@@ -363,12 +373,21 @@ void EbCtrbIn::shutdown()
   if (_mebCtrb)  _mebCtrb->shutdown();
 }
 
+static json createPulseIdMsg(uint64_t pulseId)
+{
+    json msg, body;
+    msg["key"] = "pulseId";
+    body["pulseId"] = pulseId;
+    msg["body"] = body;
+    return msg;
+}
+
 void EbCtrbIn::process(const ResultDgram& result, const void* appPrm)
 {
   const Input* input = (const Input*)appPrm;
   uint64_t     pid   = result.pulseId();
 
-  assert(input);
+  if (!input)  throw "Fatal: input == nullptr";
 
   //if (result.xtc.damage.value())
   //{
@@ -387,13 +406,13 @@ void EbCtrbIn::process(const ResultDgram& result, const void* appPrm)
   {
     fprintf(stderr, "%s:\n  Out of order event: prev %014lx, cur %014lx, diff %ld, xor %014lx\n",
             __PRETTY_FUNCTION__, _pid, pid, pid - _pid, pid ^ _pid);
-    //abort();
+    //throw "Out of order event";
   }
   _pid = pid;
 
   if (_mebCtrb)
   {
-    if (result.seq.isEvent())           // L1Accept
+    if (result.isEvent())           // L1Accept
     {
       if (result.monitor())  _mebCtrb->post(input, result.monBufNo());
     }
@@ -404,13 +423,14 @@ void EbCtrbIn::process(const ResultDgram& result, const void* appPrm)
   }
 
   // Pass non L1 accepts to control level
-  if (!result.seq.isEvent())
+  if (!result.isEvent())
   {
     printf("%s:\n  Saw '%s' transition on %014lx\n",
-           __PRETTY_FUNCTION__, TransitionId::name(result.seq.service()), pid);
+           __PRETTY_FUNCTION__, TransitionId::name(result.service()), pid);
 
     // Send pulseId to inproc so it gets forwarded to Collection
-    _inprocSend.send(std::to_string(pid * 100)); // Convert PID back to "timestamp"
+    json msg = createPulseIdMsg(pid * 100); // Convert PID back to "timestamp"
+    _inprocSend.send(msg.dump());
   }
 
   // Revisit: Race condition
@@ -426,7 +446,7 @@ EbCtrbApp::EbCtrbApp(const TebCtrbParams&                   prms,
   _drpSim       (prms.maxInputSize),
   _prms         (prms)
 {
-  std::map<std::string, std::string> labels{{"partition", std::to_string(prms.partition)}};
+  std::map<std::string, std::string> labels{{"instrument", prms.instrument},{"partition", std::to_string(prms.partition)}};
   exporter->add("TCtbO_AlPdg", labels, MetricType::Gauge, [&](){ return _drpSim.allocPending(); });
 }
 
@@ -434,7 +454,12 @@ void EbCtrbApp::run(EbCtrbIn& in)
 {
   TebContributor::startup(in);
 
-  pinThread(pthread_self(), _prms.core[0]);
+  int rc = pinThread(pthread_self(), _prms.core[0]);
+  if (rc != 0)
+  {
+    fprintf(stderr, "%s:\n  Error from pinThread:\n  %s\n",
+            __PRETTY_FUNCTION__, strerror(rc));
+  }
 
 #ifdef SINGLE_EVENTS
   printf("Hit <return> for an event\n");
@@ -457,8 +482,17 @@ void EbCtrbApp::run(EbCtrbIn& in)
 
     const EbDgram* input = _drpSim.generate();
     if (!input)  continue;
+    struct _TimingHeader
+    {
+      uint64_t  _pulseId;
+      TimeStamp _time;
+      uint32_t  _env;
+      uint32_t  _evtCounter;
+      uint32_t  _opaque[2];
+    } thBuf = { input->pulseId() | (uint64_t(input->control()) << 56), input->time, input->env, 0, {0, 0} };
+    const TimingHeader* th = (const TimingHeader*)&thBuf; // Work around evil type punning
 
-    void* buffer = allocate(input, input); // 2nd arg is returned with the result
+    void* buffer = allocate(*th, input); // 2nd arg is returned with the result
     if (buffer)
     {
       // Copy entire datagram into the batch (copy ctor doesn't copy payload)
@@ -515,6 +549,7 @@ CtrbApp::CtrbApp(const std::string&                     collSrv,
   _mebCtrb(mebPrms, exporter),
   _inbound(tebPrms, _tebCtrb.drpSim(), context(), exporter)
 {
+  printf("Ready for transitions\n");
 }
 
 json CtrbApp::connectionInfo()
@@ -739,6 +774,7 @@ int CtrbApp::_parseConnectionParams(const json& body)
   printf("  Bit list of TEBs:         0x%016lx, cnt: %zd\n", _tebPrms.builders,
                                                              std::bitset<64>(_tebPrms.builders).count());
   printf("  Number of MEBs:             %zd\n",              _mebPrms.addrs.size());
+  printf("  Batching state:             %s\n",               _tebPrms.batching ? "Enabled" : "Disabled");
   printf("  Batch duration:           0x%014lx = %ld uS\n",  BATCH_DURATION, BATCH_DURATION);
   printf("  Batch pool depth:           %d\n",               MAX_BATCHES);
   printf("  Max # of entries / batch:   %d\n",               MAX_ENTRIES);
@@ -794,6 +830,7 @@ int main(int argc, char **argv)
   std::string    collSrv;
   TebCtrbParams  tebPrms { /* .ifAddr        = */ { }, // Network interface to use
                            /* .port          = */ { }, // Port served to TEBs
+                           /* .instrument    = */ { },
                            /* .partition     = */ NO_PARTITION,
                            /* .alias         = */ { }, // Unique name from cmd line
                            /* .id            = */ -1u,
@@ -804,9 +841,11 @@ int main(int argc, char **argv)
                            /* .core          = */ { CORE_0, CORE_1 },
                            /* .verbose       = */ 0,
                            /* .groups        = */ 0,
-                           /* .contractor    = */ 0 };
+                           /* .contractor    = */ 0,
+                           /* .batching      = */ true };
   MebCtrbParams  mebPrms { /* .addrs         = */ { },
                            /* .ports         = */ { },
+                           /* .instrument    = */ { },
                            /* .partition     = */ NO_PARTITION,
                            /* .id            = */ -1u,
                            /* .maxEvents     = */ 0,  // Filled in @ connect time
@@ -850,7 +889,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "More batch entries (%u) requested than definable "
             "in the batch duration (%lu)\n",
             MAX_ENTRIES, BATCH_DURATION);
-    abort();
+    throw "Fatal: MAX_ENTRIES > BATCH_DURATION";
   }
 
   struct sigaction sigAction;
@@ -863,21 +902,22 @@ int main(int argc, char **argv)
 
   prometheus::Exposer exposer{"0.0.0.0:9200", "/metrics", 1};
   auto exporter = std::make_shared<MetricExporter>();
-
-  CtrbApp app(collSrv, tebPrms, mebPrms, exporter);
-
   exposer.RegisterCollectable(exporter);
 
   try
   {
+    CtrbApp app(collSrv, tebPrms, mebPrms, exporter);
+
     app.run();
-  }
-  catch (std::exception& e)
-  {
-    fprintf(stderr, "%s\n", e.what());
-  }
 
-  app.handleReset(json({}));
+    app.handleReset(json({}));
 
-  return 0;
+    return 0;
+  }
+  catch (std::exception& e)  { fprintf(stderr, "%s\n", e.what()); }
+  catch (std::string& e)     { fprintf(stderr, "%s\n", e.c_str()); }
+  catch (char const* e)      { fprintf(stderr, "%s\n", e); }
+  catch (...)                { fprintf(stderr, "Default exception\n"); }
+
+  return EXIT_FAILURE;
 }

@@ -17,6 +17,7 @@ def detnames():
   parser.add_argument('-r','--raw', dest='raw', action='store_true')
   parser.add_argument('-e','--epics', dest='epics', action='store_true')
   parser.add_argument('-s','--scan', dest='scan', action='store_true')
+  parser.add_argument('-i','--ids', dest='ids', action='store_true')
   args = parser.parse_args()
 
   if '=' in args.dsname:
@@ -53,11 +54,22 @@ def detnames():
     headers = ['Name','Data Type']
     format_string = '{0:%d} | {1:%d}'
     names = myrun.scaninfo
+  elif args.ids:
+    headers = ['Name','Data Type','Segments','UniqueId']
+    format_string = '{0:%d} | {1:%d} | {2:%d} | {3:%d}'
+    names = myrun.detinfo.keys()
+    newnames = []
+    for name in names:
+      datatype = name[1]
+      data = getattr(myrun.Detector(name[0]),datatype)
+      segments = ','.join([str(segid) for segid in data._sorted_segment_ids])
+      newnames.append((name[0],datatype,segments,data._uniqueid))
+    names = newnames
   else:
     headers = ['Name','Data Type']
     format_string = '{0:%d} | {1:%d}'
     names = myrun.detinfo.keys()
-  
+
   maxlen = [len(h) for h in headers]
   for ntuple in names:
     lengths = [len(n) for n in ntuple]
@@ -72,3 +84,4 @@ def detnames():
   for n in names: 
     print(template.format(*n))
   print('-'*len(header))
+

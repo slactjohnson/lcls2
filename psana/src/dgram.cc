@@ -128,6 +128,44 @@ static void addObjHierarchy(PyObject* parent, PyObject* pycontainertype,
     }
 }
 
+// add _xtc (_ prefix hides this from the detector interface)
+// and its attributes to dgram object
+static void setXtc(PyObject* parent, PyObject* pycontainertype, Xtc* myXtc) {
+
+    int fail = 0;
+    PyObject* pyXtc;
+    pyXtc = PyObject_CallObject(pycontainertype, NULL);
+    fail = PyObject_SetAttrString(parent, "_xtc", pyXtc);
+    if (fail) throw "setXtc: failed to set container _xtc attribute\n";
+    Py_DECREF(pyXtc);
+
+    uint16_t damage = myXtc->damage.value();
+    PyObject* pyDamage = Py_BuildValue("H", damage);
+    fail = PyObject_SetAttrString(pyXtc, "damage", pyDamage);
+    if (fail) throw "setXtc: failed to set container damage attribute\n";
+    Py_DECREF(pyDamage);
+}
+
+// add _xtc to each segment of det_name dictionary object
+static void setXtcForSegment(PyObject* parent, PyObject* pycontainertype,
+        const char* detName, unsigned segment, Xtc* myXtc) {
+    PyObject* dict;
+    dict = PyObject_GetAttrString(parent, detName);
+    Py_DECREF(dict); // transfer ownership to parent
+
+    // get segment container for this segment
+    PyObject* pySeg = Py_BuildValue("i", segment);
+    PyObject* container;
+    container = PyDict_GetItem(dict, pySeg);
+    Py_DECREF(pySeg);
+
+    const char* xtcLabel = "_xtc";
+    int hasXtcLabel = PyObject_HasAttrString(container, xtcLabel);
+    if (hasXtcLabel == 1) return;
+
+    setXtc(container, pycontainertype, myXtc);
+}
+
 static void setAlg(PyObject* parent, PyObject* pycontainertype, const char* baseName, Alg& alg, unsigned segment) {
     const char* algName = alg.name();
     const uint32_t _v = alg.version();
@@ -261,9 +299,10 @@ static PyObject* createEnum(const char* enumname, PyDgramObject* pyDgram, DescDa
     return parent;
 }
 
-static void dictAssign(PyDgramObject* pyDgram, DescData& descdata)
+static void dictAssign(PyDgramObject* pyDgram, DescData& descdata, Xtc* myXtc)
 {
     Names& names = descdata.nameindex().names();
+
 
     char keyName[TMPSTRINGSIZE];
     char tempName[TMPSTRINGSIZE];
@@ -442,6 +481,7 @@ static void dictAssign(PyDgramObject* pyDgram, DescData& descdata)
                      names.detName(),PyNameDelim,names.alg().name(),
                      PyNameDelim,varName);
             addObjHierarchy((PyObject*)pyDgram, pyDgram->contInfo.pycontainertype, keyName, newobj, names.segment());
+            setXtcForSegment((PyObject*)pyDgram, pyDgram->contInfo.pycontainertype, names.detName(), names.segment(), myXtc);
         }
     }
 }
@@ -472,7 +512,7 @@ public:
             // in some sense.
             if (_namesLookup.count(namesId)>0) {
                 DescData descdata(shapesdata, _namesLookup[namesId]);
-                dictAssign(_pyDgram, descdata);
+                dictAssign(_pyDgram, descdata, xtc);
             } else {
                 printf("*** Corrupt xtc: namesid 0x%x not found in NamesLookup\n",(int)namesId);
                 throw "invalid namesid";
@@ -493,18 +533,18 @@ private:
 static void assignDict(PyDgramObject* self, PyDgramObject* configDgram) {
     bool isConfig;
     isConfig = (configDgram == 0) ? true : false;
-    
+
     if (isConfig) {
         configDgram = self; // we weren't passed a config, so we must be config
 
         configDgram->namesIter = new NamesIter(&(configDgram->dgram->xtc));
         configDgram->namesIter->iterate();
-    
+
         dictAssignConfig(configDgram, configDgram->namesIter->namesLookup());
     } else {
         self->namesIter = 0; // in case dgram was not created via dgram_init
     }
-    
+
     PyConvertIter iter(&self->dgram->xtc, self, configDgram->namesIter->namesLookup());
     iter.iterate();
 }
@@ -512,8 +552,11 @@ static void assignDict(PyDgramObject* self, PyDgramObject* configDgram) {
 static void dgram_dealloc(PyDgramObject* self)
 {
     // shmem client must notify server to release buffer
-    if(self->shmem_cli_cptr) {
-        self->shmem_cli_cptr->free(self->shmem_index,self->shmem_size);
+    if (self->shmem_cli_cptr) {
+        // Non-L1Accept transition buffers were freed at Dgram creation time
+        if (self->dgram->service() == XtcData::TransitionId::L1Accept) {
+            self->shmem_cli_cptr->free(self->shmem_index,self->shmem_size);
+        }
         // make sure the client doesn't get deleted until after the dgram
         Py_DECREF(self->shmem_cli_pyobj);
     }
@@ -652,7 +695,7 @@ static int dgram_init(PyDgramObject* self, PyObject* args, PyObject* kwds)
                                      &self->shmem_cli_pyobj)) {
         return -1;
     }
-    
+
     if (fd > -1) {
         if (fcntl(fd, F_GETFD) == -1) {
             PyErr_SetString(PyExc_OSError, "invalid file descriptor");
@@ -664,7 +707,7 @@ static int dgram_init(PyDgramObject* self, PyObject* args, PyObject* kwds)
 
     self->contInfo.containermod = PyImport_ImportModule("psana.container");
     self->contInfo.pycontainertype = PyObject_GetAttrString(self->contInfo.containermod,"Container");
-    
+
     // Retrieve size and file_descriptor
     Dgram dgram_header; // For case (1) and (2) below to store the header for later
     if (!isView) {
@@ -676,7 +719,7 @@ static int dgram_init(PyDgramObject* self, PyObject* args, PyObject* kwds)
 
         if (fd==-1 && configDgram==0) {
             PyErr_SetString(PyExc_RuntimeError, "Creating empty dgram is no longer supported.");
-            return -1;    
+            return -1;
         } else {
             if (fd==-1) {
                 // For (2)
@@ -685,7 +728,7 @@ static int dgram_init(PyDgramObject* self, PyObject* args, PyObject* kwds)
                 // For (1) and (3)
                 self->file_descriptor=fd;
             }
-            
+
             // For (3), size is already given.
             if (self->size == 0) {
                 // For (1) and (2), obtain dgram_header from fd then extract size
@@ -694,7 +737,7 @@ static int dgram_init(PyDgramObject* self, PyObject* args, PyObject* kwds)
                     PyErr_SetString(PyExc_StopIteration, "Problem reading dgram header.");
                     return -1;
                 }
-                
+
                 self->size = sizeof(Dgram) + dgram_header.xtc.sizeofPayload();
             }
         }
@@ -732,13 +775,13 @@ static int dgram_init(PyDgramObject* self, PyObject* args, PyObject* kwds)
         }
         self->dgram = (Dgram*)(((char *)self->buf.buf) + self->offset);
         self->size = sizeof(Dgram) + self->dgram->xtc.sizeofPayload();
-        
+
         // the presence of shmem_cli_cptr kwarg denotes shmem datagram view
         if (shmem_cli_cptr) {
             // make sure the client doesn't get deleted until after the dgram
             Py_INCREF(self->shmem_cli_pyobj);
             // convert the shmem client view object to a real pointer
-            // there must be a more straight forward way to simply pass in a void* 
+            // there must be a more straight forward way to simply pass in a void*
             // from cython and cast to C++ struct* here
             Py_buffer buf;
             if (PyObject_GetBuffer(shmem_cli_cptr, &(buf), PyBUF_SIMPLE) == -1) {
@@ -764,8 +807,11 @@ static int dgram_init(PyDgramObject* self, PyObject* args, PyObject* kwds)
         int err = dgram_read(self, sequential);
         if (err) return err;
     }
-    
+
     assignDict(self, (PyDgramObject*)configDgram);
+
+    // Add top level xtc container and its attributes
+    setXtc((PyObject*)self, self->contInfo.pycontainertype, &(self->dgram->xtc));
 
     return 0;
 }
@@ -808,9 +854,9 @@ static int PyDgramObject_getbuffer(PyObject *obj, Py_buffer *view, int flags)
     view->strides = &view->itemsize;
     view->suboffsets = NULL;
     view->internal = NULL;
-    
-    Py_INCREF(self);  
-    return 0;    
+
+    Py_INCREF(self);
+    return 0;
 }
 
 static PyBufferProcs PyDgramObject_as_buffer = {
@@ -883,7 +929,7 @@ static PyTypeObject dgram_DgramType = {
     0, /* tp_getattro */
     0, /* tp_setattro */
     &PyDgramObject_as_buffer, /* tp_as_buffer */
-    (Py_TPFLAGS_DEFAULT 
+    (Py_TPFLAGS_DEFAULT
 #if PY_MAJOR_VERSION < 3
     | Py_TPFLAGS_CHECKTYPES
     | Py_TPFLAGS_HAVE_NEWBUFFER
@@ -949,7 +995,7 @@ PyMODINIT_FUNC PyInit_dgram(void)
 #else
 PyMODINIT_FUNC initdgram(void) {
     PyObject *m;
-    
+
     import_array();
 
     if (PyType_Ready(&dgram_DgramType) < 0)

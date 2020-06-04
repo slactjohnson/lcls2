@@ -66,7 +66,6 @@ public:
 
 TimingSystem::TimingSystem(Parameters* para, MemPool* pool) :
     XpmDetector(para, pool),
-    m_evtcount(0),
     m_evtNamesId(-1, -1), // placeholder
     m_connect_json("")
 {
@@ -82,7 +81,7 @@ static void check(PyObject* obj) {
 void TimingSystem::_addJson(Xtc& xtc, NamesId& configNamesId, const std::string& config_alias) {
 
     // returns new reference
-    PyObject* pModule = PyImport_ImportModule("psalg.configdb.ts_config");
+    PyObject* pModule = PyImport_ImportModule("psdaq.configdb.ts_config");
     check(pModule);
     // returns borrowed reference
     PyObject* pDict = PyModule_GetDict(pModule);
@@ -92,7 +91,8 @@ void TimingSystem::_addJson(Xtc& xtc, NamesId& configNamesId, const std::string&
     check(pFunc);
     // need to get the dbase connection info via collection
     // returns new reference
-    PyObject* mybytes = PyObject_CallFunction(pFunc,"sss",m_connect_json.c_str(), config_alias.c_str(), m_para->detName.c_str());
+    PyObject* mybytes = PyObject_CallFunction(pFunc,"sssi",m_connect_json.c_str(), config_alias.c_str(), 
+                                              m_para->detName.c_str(), m_para->detSegment);
     check(mybytes);
     // returns new reference
     PyObject * json_bytes = PyUnicode_AsASCIIString(mybytes);
@@ -100,7 +100,7 @@ void TimingSystem::_addJson(Xtc& xtc, NamesId& configNamesId, const std::string&
     char* json = (char*)PyBytes_AsString(json_bytes);
 
     // convert to json to xtc
-    unsigned len = Pds::translateJson2Xtc(json, config_buf, configNamesId);
+    unsigned len = Pds::translateJson2Xtc(json, config_buf, configNamesId, m_para->detName.c_str(), m_para->detSegment);
     if (len>BUFSIZE) {
         throw "**** Config json output too large for buffer\n";
     }
@@ -124,7 +124,7 @@ void TimingSystem::_addJson(Xtc& xtc, NamesId& configNamesId, const std::string&
 void TimingSystem::connect(const json& connect_json, const std::string& collectionId)
 {
     XpmDetector::connect(connect_json, collectionId);
-    
+
     int fd = open(m_para->device.c_str(), O_RDWR);
     if (fd < 0) {
         std::cout<<"Error opening "<< m_para->device << '\n';
@@ -135,12 +135,12 @@ void TimingSystem::connect(const json& connect_json, const std::string& collecti
     dmaReadRegister(fd, 0x00a00000, &val);
     // zero out the "length" field which changes the behaviour of the
     // firmware from fake-camera mode to timing-system mode
-    val&=0xf000000f;
+    val&=0xf0000000;
     dmaWriteRegister(fd, 0x00a00000, val);
     close(fd);
 
     // returns new reference
-    PyObject* pModule = PyImport_ImportModule("psalg.configdb.ts_connect");
+    PyObject* pModule = PyImport_ImportModule("psdaq.configdb.ts_connect");
     check(pModule);
     // returns borrowed reference
     PyObject* pDict = PyModule_GetDict(pModule);
@@ -165,8 +165,9 @@ unsigned TimingSystem::configure(const std::string& config_alias, Xtc& xtc)
     _addJson(xtc, configNamesId, config_alias);
 
     // set up the names for L1Accept data
-    Alg tsAlg("ts", 0, 0, 1);
-    Names& eventNames = *new(xtc) Names(m_para->detName.c_str(), tsAlg, "ts", "detnum1235", m_evtNamesId, m_para->detSegment);
+    Alg alg("raw", 2, 0, 0);
+    Names& eventNames = *new(xtc) Names(m_para->detName.c_str(), alg,
+                                        m_para->detType.c_str(), m_para->serNo.c_str(), m_evtNamesId, m_para->detSegment);
     eventNames.add(xtc, TSDef);
     m_namesLookup[m_evtNamesId] = NameIndex(eventNames);
     return 0;
@@ -178,8 +179,6 @@ void TimingSystem::beginstep(XtcData::Xtc& xtc, const json& stepInfo) {
 
 void TimingSystem::event(XtcData::Dgram& dgram, PGPEvent* event)
 {
-    m_evtcount+=1;
-
     DescribedData ts(dgram.xtc, m_namesLookup, m_evtNamesId);
 
     int lane = __builtin_ffs(event->mask) - 1;
@@ -188,7 +187,7 @@ void TimingSystem::event(XtcData::Dgram& dgram, PGPEvent* event)
     //    unsigned data_size = event->buffers[lane].size - sizeof(Pds::TimingHeader);
     // DMA is padded to workaround firmware problem; only copy relevant part.
     unsigned data_size = 968/8;
-    
+
     memcpy(ts.data(), (uint8_t*)m_pool->dmaBuffers[dmaIndex] + sizeof(Pds::TimingHeader), data_size);
     ts.set_data_length(data_size);
 

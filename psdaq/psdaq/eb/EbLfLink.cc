@@ -34,7 +34,7 @@ int EbLfLink::setupMr(void*  region,
   {
     Fabric* fab = _ep->fabric();
 
-    if (_verbose)
+    if (_verbose > 1)
     {
       printf("Deregistering   memory region: %10p : %10p, size %zd\n",
              _mr->start(), (char*)(_mr->start()) + _mr->length(), _mr->length());
@@ -75,13 +75,13 @@ int EbLfLink::setupMr(void*          region,
   return 0;
 }
 
-int EbLfLink::recvU32(uint32_t*     u32,
-                      const char*   name)
+int EbLfLink::recvU32(uint32_t*   u32,
+                      const char* name)
 {
   ssize_t rc;
   void*   buf = _bufMr->start();
 
-  if ((rc = _ep->recv_sync(buf, sizeof(u32), _bufMr)) < 0)
+  if ((rc = _ep->recv_sync(buf, sizeof(*u32), _bufMr)) < 0)
   {
     fprintf(stderr, "%s:\n  Failed to receive %s from peer: %s\n",
             __PRETTY_FUNCTION__, name, _ep->error());
@@ -89,13 +89,13 @@ int EbLfLink::recvU32(uint32_t*     u32,
   }
   *u32 = *(uint32_t*)buf;
 
-  if (_verbose)  printf("Received peer's %s: %d\n", name, *u32);
+  if (_verbose > 1)  printf("Received peer's %s: %d\n", name, *u32);
 
   return 0;
 }
 
-int EbLfLink::sendU32(uint32_t      u32,
-                      const char*   name)
+int EbLfLink::sendU32(uint32_t    u32,
+                      const char* name)
 {
   ssize_t      rc;
   void*        buf = _bufMr->start();
@@ -112,7 +112,7 @@ int EbLfLink::sendU32(uint32_t      u32,
     return rc;
   }
 
-  if (_verbose)  printf("Sent     peer   %s  %d\n", name, u32);
+  if (_verbose > 1)  printf("Sent     peer   %s  %d\n", name, u32);
 
   return 0;
 }
@@ -134,7 +134,7 @@ int EbLfLink::sendMr(MemoryRegion* mr)
     return rc;
   }
 
-  if (_verbose)
+  if (_verbose > 1)
   {
     printf("Sent     local  memory region: %10p : %10p, size %zd\n",
            (void*)ra.addr, (void*)(ra.addr + ra.extent), ra.extent);
@@ -155,7 +155,7 @@ int EbLfLink::recvMr(RemoteAddress& ra)
 
   memcpy(&ra, _bufMr->start(), sizeof(ra));
 
-  if (_verbose)
+  if (_verbose > 1)
   {
     printf("Received remote memory region: %10p : %10p, size %zd\n",
            (void*)ra.addr, (void*)(ra.addr + ra.extent), ra.extent);
@@ -280,7 +280,7 @@ int EbLfCltLink::prepare(void*  region,
     {
       Fabric* fab = _ep->fabric();
 
-      if (_verbose)
+      if (_verbose > 1)
       {
         printf("Deregistering   memory region: %10p : %10p, size %zd\n",
                _mr->start(), (char*)(_mr->start()) + _mr->length(), _mr->length());

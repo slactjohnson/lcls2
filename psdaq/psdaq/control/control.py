@@ -2,7 +2,8 @@ import os
 import time
 import copy
 import socket
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import json as oldjson
 import zmq
 import zmq.utils.jsonapi as json
 from transitions import Machine, MachineError, State
@@ -58,7 +59,6 @@ class DaqControl:
         'running'
     ]
 
-    default_active = 1
     # default readout group is self.platform
 
     def __init__(self, *, host, platform, timeout):
@@ -115,6 +115,52 @@ class DaqControl:
             self.front_req_init()
         except Exception as ex:
             logging.error('getPlatform() Exception: %s' % ex)
+        except KeyboardInterrupt:
+            print('KeyboardInterrupt')
+        else:
+            try:
+                retval = reply['body']
+            except KeyError:
+                pass
+
+        return retval
+
+    #
+    # DaqControl.getJsonConfig - get json configuration
+    #
+    def getJsonConfig(self):
+        src = self.getPlatform()
+        dst = {"activedet": {}}
+        for level, item1 in src.items():
+            if level == "control":
+                continue    # skip
+            if level not in dst["activedet"]:
+                dst["activedet"][level] = {}
+            for xx, item2 in item1.items():
+                alias = item2["proc_info"]["alias"]
+                dst["activedet"][level][alias] = {}
+                if "det_info" in item2:
+                    dst["activedet"][level][alias]["det_info"] = item2["det_info"].copy()
+                dst["activedet"][level][alias]["active"] = item2["active"]
+
+        return oldjson.dumps(dst, sort_keys=True, indent=4)
+
+    #
+    # DaqControl.storeJsonConfig - store json configuration
+    #
+    def storeJsonConfig(self, json_data):
+        retval = {}
+        body = {"json_data": json_data}
+        try:
+            msg = create_msg('storejsonconfig', body=body)
+            self.front_req.send_json(msg)
+            reply = self.front_req.recv_json()
+        except zmq.Again:
+            logging.error('storeJsonConfig() timeout (%.1f sec)' % (self.timeout / 1000.))
+            logging.info('storeJsonConfig() reinitializing zmq socket')
+            self.front_req_init()
+        except Exception as ex:
+            logging.error('storeJsonConfig() Exception: %s' % ex)
         except KeyboardInterrupt:
             print('KeyboardInterrupt')
         else:
@@ -217,6 +263,10 @@ class DaqControl:
                     # return 'fileReport', path, 'error', 'error'
                     return 'fileReport', msg['body']['path'], 'error', 'error'
 
+                elif msg['header']['key'] == 'progress':
+                    # return 'progress', transition, elapsed, total
+                    return 'progress', msg['body']['transition'], msg['body']['elapsed'], msg['body']['total']
+
             except KeyboardInterrupt:
                 break
 
@@ -298,6 +348,34 @@ class DaqControl:
                     pass
         else:
             errorMessage = 'setRecord() requires True or False'
+
+        return errorMessage
+
+    #
+    # DaqControl.setBypass - set bypass_activedet flag
+    #   True or False
+    #
+    def setBypass(self, bypassIn):
+        errorMessage = None
+        if type(bypassIn) == type(True):
+            if bypassIn:
+                bypass = '1'
+            else:
+                bypass = '0'
+
+            try:
+                msg = create_msg('setbypass.' + bypass)
+                self.front_req.send_json(msg)
+                reply = self.front_req.recv_json()
+            except Exception as ex:
+                errorMessage = 'setBypass() Exception: %s' % ex
+            else:
+                try:
+                    errorMessage = reply['body']['err_info']
+                except KeyError:
+                    pass
+        else:
+            errorMessage = 'setBypass() requires True or False'
 
         return errorMessage
 
@@ -448,6 +526,10 @@ def fileReport_msg(path):
     body = {'path': path}
     return create_msg('fileReport', body=body)
 
+def progress_msg(transition, elapsed, total):
+    body = {'transition': transition, 'elapsed': int(elapsed), 'total': int(total)}
+    return create_msg('progress', body=body)
+
 def back_pull_port(platform):
     return PORT_BASE + platform
 
@@ -508,27 +590,6 @@ def wait_for_answers(socket, wait_time, msg_id):
         remaining = max(0, int(wait_time - 1000*(time.time() - start)))
 
 
-def confirm_response(socket, wait_time, msg_id, ids):
-    global report_keys
-    logging.debug('confirm_response(): ids = %s' % ids)
-    msgs = []
-    reports = []
-    for msg in wait_for_answers(socket, wait_time, msg_id):
-        if msg['header']['key'] in report_keys:
-            reports.append(msg)
-        elif msg['header']['sender_id'] in ids:
-            msgs.append(msg)
-            ids.remove(msg['header']['sender_id'])
-            logging.debug('confirm_response(): removed %s from ids' % msg['header']['sender_id'])
-        else:
-            logging.debug('confirm_response(): %s not in ids' % msg['header']['sender_id'])
-        if len(ids) == 0:
-            break
-    for ii in ids:
-        logging.debug('id %s did not respond' % ii)
-    return ids, msgs, reports
-
-
 class CollectionManager():
     def __init__(self, args):
         self.platform = args.p
@@ -554,6 +615,23 @@ class CollectionManager():
         self.password = args.password
         self.url = args.url
         self.experiment_name = None
+        self.rollcall_timeout = args.rollcall_timeout
+        self.bypass_activedet = False
+
+        if args.r:
+            # active detectors file from command line
+            self.activedetfilename = args.r
+        else:
+            # default active detectors file
+            homedir = os.path.expanduser('~')
+            self.activedetfilename = '%s/.psdaq/p%d.activedet.json' % (homedir, self.platform)
+
+        if self.activedetfilename == '/dev/null':
+            # active detectors file bypassed
+            self.bypass_activedet = True
+            logging.warning("active detectors file disabled. Default settings will be used.")
+        else:
+            logging.info("active detectors file: %s" % self.activedetfilename)
 
         if self.slow_update_rate:
             # initialize slow update thread
@@ -598,44 +676,46 @@ class CollectionManager():
             'selectplatform': self.handle_selectplatform,
             'getinstrument': self.handle_getinstrument,
             'getstate': self.handle_getstate,
+            'storejsonconfig': self.handle_storejsonconfig,
             'getstatus': self.handle_getstatus
         }
         self.lastTransition = 'reset'
         self.recording = False
 
-        self.collectMachine = Machine(self, DaqControl.states, initial='reset', after_state_change='report_status')
+        self.collectMachine = Machine(self, DaqControl.states, initial='reset')
 
         self.collectMachine.add_transition('reset', '*', 'reset',
-                                           conditions='condition_reset')
+                                           conditions='condition_reset', after='report_status')
         self.collectMachine.add_transition('rollcall', ['reset', 'unallocated'], 'unallocated',
-                                           conditions='condition_rollcall')
+                                           conditions='condition_rollcall', after='report_status')
         self.collectMachine.add_transition('alloc', 'unallocated', 'allocated',
-                                           conditions='condition_alloc')
+                                           conditions='condition_alloc', after='report_status')
         self.collectMachine.add_transition('dealloc', 'allocated', 'unallocated',
-                                           conditions='condition_dealloc')
+                                           conditions='condition_dealloc', after='report_status')
         self.collectMachine.add_transition('connect', 'allocated', 'connected',
-                                           conditions='condition_connect')
+                                           conditions='condition_connect', after='report_status')
         self.collectMachine.add_transition('disconnect', 'connected', 'allocated',
-                                           conditions='condition_disconnect')
+                                           conditions='condition_disconnect', after='report_status')
         self.collectMachine.add_transition('configure', 'connected', 'configured',
-                                           conditions='condition_configure')
+                                           conditions='condition_configure', after='report_status')
         self.collectMachine.add_transition('unconfigure', 'configured', 'connected',
-                                           conditions='condition_unconfigure')
+                                           conditions='condition_unconfigure', after='report_status')
         self.collectMachine.add_transition('beginrun', 'configured', 'starting',
-                                           conditions='condition_beginrun')
+                                           conditions='condition_beginrun', after='report_status')
         self.collectMachine.add_transition('endrun', 'starting', 'configured',
-                                           conditions='condition_endrun')
+                                           conditions='condition_endrun', after='report_status')
         self.collectMachine.add_transition('beginstep', 'starting', 'paused',
-                                           conditions='condition_beginstep')
+                                           conditions='condition_beginstep', after='report_status')
         self.collectMachine.add_transition('endstep', 'paused', 'starting',
-                                           conditions='condition_endstep')
+                                           conditions='condition_endstep', after='report_status')
         self.collectMachine.add_transition('enable', 'paused', 'running',
-                                           after='after_enable',
+                                           after=['after_enable', 'report_status'],
                                            conditions='condition_enable')
         self.collectMachine.add_transition('disable', 'running', 'paused',
                                            before='before_disable',
-                                           conditions='condition_disable')
+                                           conditions='condition_disable', after='report_status')
         # slowupdate is an internal transition
+        # do not report status after slowupdate transition
         self.collectMachine.add_transition('slowupdate', 'running', None,
                                            conditions='condition_slowupdate')
 
@@ -684,6 +764,7 @@ class CollectionManager():
         #  setstate.STATE
         #  setconfig.CONFIG_ALIAS
         #  setrecord.RECORD_FLAG
+        #  setbypass.BYPASS_FLAG
         #  TRANSITION
         #  REQUEST
         answer = None
@@ -707,6 +788,13 @@ class CollectionManager():
                     self.handle_setrecord(False)
                 else:
                     self.handle_setrecord(True)
+                answer = None
+            elif key[0] == 'setbypass':
+                # handle_setbypass() sends reply internally
+                if key[1] == '0':
+                    self.handle_setbypass(False)
+                else:
+                    self.handle_setbypass(True)
                 answer = None
             elif key[0] in DaqControl.transitions:
                 # is body dict not-empty?
@@ -767,6 +855,34 @@ class CollectionManager():
                 logging.error("register_file error: status code %d" % resp.status_code)
 
         return
+
+    #
+    # confirm_response -
+    #
+    def confirm_response(self, socket, wait_time, msg_id, ids, *, progress_txt=None):
+        global report_keys
+        logging.debug('confirm_response(): ids = %s' % ids)
+        msgs = []
+        reports = []
+        begin_time = datetime.now(timezone.utc)
+        end_time = begin_time + timedelta(milliseconds=wait_time)
+        while len(ids) > 0 and datetime.now(timezone.utc) < end_time:
+            for msg in wait_for_answers(socket, 1000, msg_id):
+                if msg['header']['key'] in report_keys:
+                    reports.append(msg)
+                elif msg['header']['sender_id'] in ids:
+                    msgs.append(msg)
+                    ids.remove(msg['header']['sender_id'])
+                    logging.debug('confirm_response(): removed %s from ids' % msg['header']['sender_id'])
+                else:
+                    logging.debug('confirm_response(): %s not in ids' % msg['header']['sender_id'])
+                if len(ids) == 0:
+                    break
+                if progress_txt is not None:
+                    self.progressReport(begin_time, end_time, progress_txt=progress_txt)
+        for ii in ids:
+            logging.debug('id %s did not respond' % ii)
+        return ids, msgs, reports
 
     #
     # process_reports
@@ -899,15 +1015,32 @@ class CollectionManager():
             # reply 'ok'
             self.front_rep.send_json(answer)
 
+    def handle_setbypass(self, newbypass):
+        logging.debug('handle_setbypass(\'%s\') in state %s' % (newbypass, self.state))
+
+        if self.state != 'reset' and self.state != 'unallocated':
+            errMsg = 'cannot change bypass_activedet setting in state \'%s\' -- deallocate first' % self.state
+            logging.error(errMsg)
+            answer = create_msg('error', body={'err_info': errMsg})
+            # reply 'error'
+            self.front_rep.send_json(answer)
+        else:
+            if newbypass != self.bypass_activedet:
+                self.bypass_activedet = newbypass
+                self.report_status()
+            answer = create_msg('ok')
+            # reply 'ok'
+            self.front_rep.send_json(answer)
+
     def status_msg(self):
         body = {'state': self.state, 'transition': self.lastTransition,
                 'platform': self.cmstate_levels(),
-                'config_alias': str(self.config_alias), 'recording': self.recording}
+                'config_alias': str(self.config_alias), 'recording': self.recording, 'bypass_activedet': self.bypass_activedet}
         return create_msg('status', body=body)
 
     def report_status(self):
-        logging.debug('status: state=%s transition=%s config_alias=%s recording=%s' %
-                      (self.state, self.lastTransition, self.config_alias, self.recording))
+        logging.debug('status: state=%s transition=%s config_alias=%s recording=%s bypass_activedet=%s' %
+                      (self.state, self.lastTransition, self.config_alias, self.recording, self.bypass_activedet))
         self.front_pub.send_json(self.status_msg())
 
     # check_answers - report and count errors in answers list
@@ -930,7 +1063,7 @@ class CollectionManager():
         ids = self.filter_active_set(self.ids)
         ids = self.filter_level('drp', ids)
         # make sure all the clients respond to transition before timeout
-        missing, answers, reports = confirm_response(self.back_pull, self.phase2_timeout, None, ids)
+        missing, answers, reports = self.confirm_response(self.back_pull, self.phase2_timeout, None, ids)
         self.process_reports(reports)
         if missing:
             logging.error('%s phase2 failed' % transition)
@@ -946,7 +1079,7 @@ class CollectionManager():
         self.back_pub.send_multipart([b'all', json.dumps(msg)])
 
         # make sure all the clients respond to alloc message with their connection info
-        retlist, answers, reports = confirm_response(self.back_pull, 1000, msg['header']['msg_id'], ids)
+        retlist, answers, reports = self.confirm_response(self.back_pull, 1000, msg['header']['msg_id'], ids)
         self.process_reports(reports)
         ret = len(retlist)
         if ret:
@@ -1017,17 +1150,27 @@ class CollectionManager():
         self.experiment_name = self.get_experiment()
         if not self.experiment_name:
             err_msg = 'condition_beginrun(): get_experiment() failed (instrument=\'%s\', station=%d)' % (self.instrument, self.station)
-            logging.error(err_msg)
             self.report_error(err_msg)
             return False
 
+        ok = True
         if self.recording:
             # RECORDING: update runDB
-            run_number = self.start_run(self.experiment_name)
-            self.phase1Info['beginrun'] = {'run_info':{'experiment_name':self.experiment_name, 'run_number':run_number}}
+            try:
+                run_number = self.start_run(self.experiment_name)
+            except Exception as ex:
+                # ERROR
+                ok = False
+                err_msg = "Failed to start a run with recording enabled"
+            else:
+                self.phase1Info['beginrun'] = {'run_info':{'experiment_name':self.experiment_name, 'run_number':run_number}}
         else:
             # NOT RECORDING: by convention, run_number == 0
             self.phase1Info['beginrun'] = {'run_info':{'experiment_name':self.experiment_name, 'run_number':0}}
+
+        if not ok:
+            self.report_error(err_msg)
+            return False
 
         # phase 1
         ok = self.condition_common('beginrun', 6000)
@@ -1036,6 +1179,13 @@ class CollectionManager():
             return False
 
         # phase 2
+        # ...clear readout
+        self.pv_put(self.pvGroupL0Reset, self.groups)
+        for pv in self.pvListMsgHeader:
+            self.pv_put(pv, DaqControl.transitionId['ClearReadout'])
+        self.pv_put(self.pvGroupMsgInsert, self.groups)
+        self.pv_put(self.pvGroupMsgInsert, 0)
+        time.sleep(1.0)
         for pv in self.pvListMsgHeader:
             self.pv_put(pv, DaqControl.transitionId['BeginRun'])
         self.pv_put(self.pvGroupMsgInsert, self.groups)
@@ -1149,7 +1299,7 @@ class CollectionManager():
             msg = create_msg('connect', body=self.filter_active_dict(self.cmstate_levels()))
             self.back_pub.send_multipart([b'partition', json.dumps(msg)])
 
-            retlist, answers, reports = confirm_response(self.back_pull, 10000, msg['header']['msg_id'], ids)
+            retlist, answers, reports = self.confirm_response(self.back_pull, 10000, msg['header']['msg_id'], ids, progress_txt='connect')
             self.process_reports(reports)
             connect_ok = (self.check_answers(answers) == 0)
             ret = len(retlist)
@@ -1169,7 +1319,7 @@ class CollectionManager():
         msg = create_msg('disconnect')
         self.back_pub.send_multipart([b'partition', json.dumps(msg)])
 
-        retlist, answers, reports = confirm_response(self.back_pull, 30000, msg['header']['msg_id'], ids)
+        retlist, answers, reports = self.confirm_response(self.back_pull, 30000, msg['header']['msg_id'], ids, progress_txt='disconnect')
         self.process_reports(reports)
         disconnect_ok = (self.check_answers(answers) == 0)
         ret = len(retlist)
@@ -1191,6 +1341,19 @@ class CollectionManager():
     def handle_getstatus(self, body):
         logging.debug('handle_getstatus()')
         return self.status_msg()
+
+    def handle_storejsonconfig(self, body):
+        logging.debug('handle_storejsonconfig()')
+        try:
+            with open(self.activedetfilename, 'w') as f:
+                print('%s' % body["json_data"], file=f)
+        except Exception as ex:
+            msg = 'handle_storejsonconfig(): %s' % ex
+            logging.error(msg)
+            return error_msg(msg)
+        else:
+            logging.info('active detectors file updated: %s' % self.activedetfilename)
+        return {}
 
     def handle_getinstrument(self, body):
         logging.debug('handle_getinstrument()')
@@ -1227,30 +1390,125 @@ class CollectionManager():
         self.ids.clear()
         return
 
+    def subtract_clients(self, missing_set):
+        if missing_set:
+            for level, item in self.cmstate_levels().items():
+                for xid in item.keys():
+                    try:
+                        alias = item[xid]['proc_info']['alias']
+                    except KeyError as ex:
+                        logging.error('KeyError: %s' % ex)
+                    else:
+                        missing_set -= set(['%s/%s' % (level, alias)])
+        return
+
+    def read_json_file(self, filename):
+        json_data = {}
+        try:
+            with open(filename) as fd:
+                json_data = oldjson.load(fd)
+        except FileNotFoundError as ex:
+            self.report_error('Error opening active detectors file: %s' % ex)
+            return {}
+        except Exception as ex:
+            self.report_error('Error reading active detectors file %s: %s' % (filename, ex))
+            return {}
+        return json_data
+
+    def get_required_set(self, d):
+        retval = set()
+        for level, item1 in d["activedet"].items():
+            for alias, item2 in item1.items():
+                retval.add(level + "/" + alias)
+        return retval
+
+    def progressReport(self, begin_time, end_time, *, progress_txt):
+        elapsed = (datetime.now(timezone.utc) - begin_time).total_seconds()
+        if elapsed >= 1.0:
+            total   = (end_time - begin_time).total_seconds()
+            self.front_pub.send_json(progress_msg(progress_txt, elapsed, total))
+        return
+
     def condition_rollcall(self):
         global report_keys
+        retval = False
+        required_set = set()
+
+        if not self.bypass_activedet and not os.path.isfile(self.activedetfilename):
+            self.report_error('Missing active detectors file %s' % self.activedetfilename)
+            logging.warning("active detectors file disabled. Default settings will be used.")
+            # active detectors file bypassed
+            self.bypass_activedet = True
+
+        if not self.bypass_activedet:
+            # determine which clients are required by reading the active detectors file
+            json_data = self.read_json_file(self.activedetfilename)
+            if len(json_data) > 0:
+                if "activedet" in json_data.keys():
+                    required_set = self.get_required_set(json_data)
+                else:
+                    self.report_error('Missing "activedet" key in active detectors file %s' % self.activedetfilename)
+            if not required_set:
+                self.report_error('Failed to read configuration from active detectors file %s' % self.activedetfilename)
+
+        logging.debug('rollcall: bypass_activedet = %s' % self.bypass_activedet)
+        missing_set = required_set.copy()
+        newfound_set = set()
         self.cmstate.clear()
         self.ids.clear()
         msg = create_msg('rollcall')
-        self.back_pub.send_multipart([b'all', json.dumps(msg)])
-        for answer in wait_for_answers(self.back_pull, 1000, msg['header']['msg_id']):
-            if answer['header']['key'] in report_keys:
-                self.process_reports([answer])
-                continue
-            for level, item in answer['body'].items():
-                if level not in self.cmstate:
-                    self.cmstate[level] = {}
-                id = answer['header']['sender_id']
-                self.cmstate[level][id] = item
-                self.cmstate[level][id]['active'] = DaqControl.default_active
-                if level == 'drp':
-                    if 'det_info' not in self.cmstate[level][id]:
-                        self.cmstate[level][id]['det_info'] = {}
-                    self.cmstate[level][id]['det_info']['readout'] = self.platform
-                self.ids.add(id)
-        if len(self.ids) == 0:
-            self.report_error('no clients responded to rollcall')
-            retval = False
+        begin_time = datetime.now(timezone.utc)
+        end_time = begin_time + timedelta(seconds=self.rollcall_timeout)
+        while datetime.now(timezone.utc) < end_time:
+            self.back_pub.send_multipart([b'all', json.dumps(msg)])
+            for answer in wait_for_answers(self.back_pull, 1000, msg['header']['msg_id']):
+                if answer['header']['key'] in report_keys:
+                    self.process_reports([answer])
+                    continue
+                for level, item in answer['body'].items():
+                    alias = item['proc_info']['alias']
+                    responder = level + '/' + alias
+                    if not self.bypass_activedet:
+                        if responder not in required_set:
+                            if responder not in newfound_set:
+                                logging.info('Received response from %s, it does not appear in active detectors file' % responder)
+                                newfound_set.add(responder)
+                            elif responder not in missing_set:
+                                # ignore duplicate response
+                                continue
+                    if level not in self.cmstate:
+                        self.cmstate[level] = {}
+                    id = answer['header']['sender_id']
+                    self.cmstate[level][id] = item
+                    if self.bypass_activedet:
+                        # active detectors file disabled: default to active=1
+                        self.cmstate[level][id]['active'] = 1
+                        if level == 'drp':
+                            self.cmstate[level][id]['det_info'] = {}
+                            self.cmstate[level][id]['det_info']['readout'] = self.platform
+                    elif responder in newfound_set:
+                        # new detector + active detectors file enabled: default to active=0
+                        self.cmstate[level][id]['active'] = 0
+                        if level == 'drp':
+                            self.cmstate[level][id]['det_info'] = {}
+                            self.cmstate[level][id]['det_info']['readout'] = self.platform
+                    else:
+                        # copy values from active detectors file
+                        self.cmstate[level][id]['active'] = json_data['activedet'][level][alias]['active']
+                        if level == 'drp':
+                            self.cmstate[level][id]['det_info'] = json_data['activedet'][level][alias]['det_info'].copy()
+                    self.ids.add(id)
+            self.subtract_clients(missing_set)
+            if not missing_set:
+                break
+            self.progressReport(begin_time, end_time, progress_txt='rollcall')
+
+        for dup in self.check_for_dups():
+            self.report_error('duplicate alias responded to rollcall: %s' % dup)
+
+        if missing_set:
+            for client in missing_set:
+                self.report_error(client + ' did not respond to rollcall')
         else:
             retval = True
             self.lastTransition = 'rollcall'
@@ -1273,6 +1531,21 @@ class CollectionManager():
         logging.debug('cmstate after rollcall:\n%s' % self.cmstate)
         logging.debug('condition_rollcall() returning %s' % retval)
         return retval
+
+    # check_for_dups - check for duplicate aliases
+    def check_for_dups(self):
+        aliases = set()
+        dups = set()
+        for level, item in self.cmstate_levels().items():
+            for xid in item:
+                alias = self.cmstate[level][xid]['proc_info']['alias']
+                if alias in aliases:
+                    dups.add(level + '/' + alias)
+                else:
+                    aliases.add(alias)
+        if len(dups) > 0:
+            logging.debug('duplicate aliases: %s' % dups)
+        return dups
 
     # filter_active_set - return subset of ids which have 'active' flag set
     def filter_active_set(self, ids):
@@ -1323,55 +1596,66 @@ class CollectionManager():
 
     def start_run(self, experiment_name):
         run_num = 0
+        ok = False
+        error_msg = "start_run error"
         serverURLPrefix = "{0}run_control/{1}/ws/".format(self.url + "/" if not self.url.endswith("/") else self.url, experiment_name)
         logging.debug('serverURLPrefix = %s' % serverURLPrefix)
         try:
             resp = requests.post(serverURLPrefix + "start_run", auth=HTTPBasicAuth(self.user, self.password))
         except Exception as ex:
-            logging.error('start_run error. HTTP request: %s' % ex)
+            logging.error("start_run (user=%s) exception: %s" % (self.user, ex))
         else:
             logging.debug("start_run response: %s" % resp.text)
             if resp.status_code == requests.codes.ok:
                 if resp.json().get("success", None):
                     logging.debug("start_run success")
                     run_num = resp.json().get("value", {}).get("num", None)
-                else:
-                    logging.error("start_run failure")
+                    ok = True
             else:
-                logging.error("start_run error: status code %d" % resp.status_code)
+                self.report_error("start_run (user=%s) error: status code %d" % (self.user, resp.status_code))
+
+        if not ok:
+            raise Exception(error_msg)
 
         logging.debug("start_run: run number = %s" % run_num)
         return run_num
 
     def end_run(self, experiment_name):
         run_num = 0
+        ok = False
+        err_msg = "end_run error"
         serverURLPrefix = "{0}run_control/{1}/ws/".format(self.url + "/" if not self.url.endswith("/") else self.url, experiment_name)
         logging.debug('serverURLPrefix = %s' % serverURLPrefix)
         try:
             resp = requests.post(serverURLPrefix + "end_run", auth=HTTPBasicAuth(self.user, self.password))
         except Exception as ex:
-            logging.error('end_run error. HTTP request: %s' % ex)
+            err_msg = "end_run error (user=%s): %s" % (self.user, ex)
         else:
             logging.debug("Response: %s" % resp.text)
             if resp.status_code == requests.codes.ok:
                 if resp.json().get("success", None):
                     logging.debug("end_run success")
-                else:
-                    logging.error("end_run failure")
+                    ok = True
             else:
-                logging.error("end_run error: status code %d" % resp.status_code)
+                err_msg = "end_run error (user=%s): status code %d" % (self.user, resp.status_code)
+
+        if not ok:
+            self.report_error(err_msg)
         return
 
     def get_experiment(self):
         logging.debug('get_experiment()')
         experiment_name = None
         instrument = self.instrument
+
+        # authentication is not required, adjust url accordingly
+        uurl = self.url.replace('ws-auth', 'ws').replace('ws-kerb', 'ws')
+
         try:
-            resp = requests.get((self.url + "/" if not self.url.endswith("/") else self.url) + "/lgbk/ws/activeexperiment_for_instrument_station",
-                                auth=HTTPBasicAuth(self.user, self.password),
-                                params={"instrument_name": instrument, "station": self.station})
-        except requests.exceptions.RequestException:
-            logging.error("get_experiment(): request exception")
+            resp = requests.get((uurl + "/" if not uurl.endswith("/") else uurl) + "/lgbk/ws/activeexperiment_for_instrument_station",
+                                params={"instrument_name": instrument, "station": self.station}, timeout=10)
+        except requests.exceptions.RequestException as ex:
+            logging.error("get_experiment(): request exception: %s" % ex)
         else:
             logging.debug("request response: %s" % resp.text)
             if resp.status_code == requests.codes.ok:
@@ -1413,7 +1697,7 @@ class CollectionManager():
             return True
 
         # make sure all the clients respond to transition before timeout
-        retlist, answers, reports = confirm_response(self.back_pull, timeout, msg['header']['msg_id'], ids)
+        retlist, answers, reports = self.confirm_response(self.back_pull, timeout, msg['header']['msg_id'], ids, progress_txt=transition)
         self.process_reports(reports)
         answers_ok = (self.check_answers(answers) == 0)
         ret = len(retlist)
@@ -1586,17 +1870,20 @@ def main():
     parser.add_argument('-p', type=int, choices=range(0, 8), default=0, help='platform (default 0)')
     parser.add_argument('-x', metavar='XPM', type=int, required=True, help='master XPM')
     parser.add_argument('-P', metavar='INSTRUMENT', required=True, help='instrument_name[:station_number]')
-    parser.add_argument('-d', metavar='CFGDATABASE', default='mcbrowne:psana@psdb-dev:9306/configDB', help='configuration database connection')
+    parser.add_argument('-d', metavar='CFGDATABASE', default='https://pswww.slac.stanford.edu/ws/devconfigdb/ws/configDB', help='configuration database connection')
     parser.add_argument('-B', metavar='PVBASE', required=True, help='PV base')
     parser.add_argument('-u', metavar='ALIAS', required=True, help='unique ID')
     parser.add_argument('-C', metavar='CONFIG_ALIAS', required=True, help='default configuration type (e.g. ''BEAM'')')
     parser.add_argument('-S', metavar='SLOW_UPDATE_RATE', type=int, choices=(0, 1, 5, 10), help='slow update rate (Hz, default 0)')
     parser.add_argument('-T', type=int, metavar='P2_TIMEOUT', default=7500, help='phase 2 timeout msec (default 7500)')
+    parser.add_argument('--rollcall_timeout', type=int, default=30, help='rollcall timeout sec (default 30)')
     parser.add_argument('-v', action='store_true', help='be verbose')
-    parser.add_argument("--user", default="xppopr", help='run database user')
-    parser.add_argument("--password", default="pcds", help='run database password')
+    parser.add_argument("--user", default="tstopr", help='HTTP authentication user')
+    parser.add_argument("--password", default="pcds", help='HTTP authentication password')
     defaultURL = "https://pswww.slac.stanford.edu/ws-auth/devlgbk/"
     parser.add_argument("--url", help="run database URL prefix. Defaults to " + defaultURL, default=defaultURL)
+    defaultActiveDetFile = "~/.psdaq/p<platform>.activedet.json"
+    parser.add_argument('-r', metavar='ACTIVEDETFILE', help="active detectors file. Defaults to " + defaultActiveDetFile)
     args = parser.parse_args()
 
     # configure logging handlers

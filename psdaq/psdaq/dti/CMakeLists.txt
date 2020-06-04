@@ -1,3 +1,5 @@
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_packages(Threads REQUIRED)
 
 add_library(dti SHARED
     PVStats.cc
@@ -11,7 +13,6 @@ target_include_directories(dti PUBLIC
 
 target_link_libraries(dti
     epicstools
-    cpsw::cpsw
     ${YAML_CPP_LIB}
 )
 
@@ -23,10 +24,9 @@ add_executable(dti_simple dti_simple.cc)
 target_link_libraries(dti_simple
    service
    cphw
-   cpsw::cpsw
    ${YAML_CPP_LIB}
    dl
-   pthread
+   Threads::Threads
    rt
 )
 
@@ -38,10 +38,9 @@ add_executable(dti_stats dti_stats.cc)
 target_link_libraries(dti_stats
    service
    cphw
-   cpsw::cpsw
    ${YAML_CPP_LIB}
    dl
-   pthread
+   Threads::Threads
    rt
 )
 
@@ -55,7 +54,7 @@ target_link_libraries(dtiPVs
    cphw
    dti
    dl
-   pthread
+   Threads::Threads
    rt
 )
 
@@ -69,7 +68,7 @@ target_link_libraries(dtiPVr
    cphwr
    dti
    dl
-   pthread
+   Threads::Threads
    rt
 )
 
@@ -81,10 +80,9 @@ add_executable(dti_eyescan dti_eyescan.cc)
 target_link_libraries(dti_eyescan
    service
    cphw
-   cpsw::cpsw
    ${YAML_CPP_LIB}
    dl
-   pthread
+   Threads::Threads
    rt
 )
 
@@ -98,7 +96,7 @@ target_link_libraries(dtiHsrCfg
    cphw
    dti
    dl
-   pthread
+   Threads::Threads
    rt
 )
 
@@ -110,10 +108,9 @@ add_executable(dti_appreg dti_appreg.cc)
 target_link_libraries(dti_appreg
    service
    cphw
-   cpsw::cpsw
    ${YAML_CPP_LIB}
    dl
-   pthread
+   Threads::Threads
    rt
 )
 

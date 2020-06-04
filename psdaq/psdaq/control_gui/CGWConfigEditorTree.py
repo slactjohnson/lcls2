@@ -30,7 +30,7 @@ from psdaq.control_gui.QWPopupEditText import QWPopupEditText, QDialog
 from psdaq.control_gui.QWPopupSelectItem import popup_select_item_from_list
 from psdaq.control_gui.CGJsonUtils import json_from_str
 
-from psalg.configdb.typed_json import updateValue, getType #, getValue
+from psdaq.configdb.typed_json import updateValue, getType #, getValue
 import ast
 #import re
 #--------------------
@@ -76,6 +76,7 @@ class CGWConfigEditorTree(QWTree) :
         self.list_max_len = kwargs.get('list_max_len',5)
 
         QWTree.__init__(self, parent)
+        self.setWordWrap(True)
 
         icon.set_icons()
         #self.clicked[QModelIndex].connect(self.on_click)
@@ -161,7 +162,7 @@ class CGWConfigEditorTree(QWTree) :
                 is_RO = is_read_only or (':RO' in k)
 
                 # completely HIDE :RO
-                if is_RO : continue
+                if is_RO and not k=='help:RO': continue
 
                 item = QStandardItem(k)
                 item.setIcon(icon.icon_folder_closed)

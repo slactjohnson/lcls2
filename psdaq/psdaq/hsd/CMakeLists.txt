@@ -1,3 +1,5 @@
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
 
 add_library(hsd SHARED
   AdcCore.cc
@@ -6,6 +8,7 @@ add_library(hsd SHARED
   ClkSynth.cc
   DmaCore.cc
   FlashController.cc
+  FexCfg.cc
   FmcCore.cc
   FmcSpi.cc
   Histogram.cc
@@ -16,6 +19,7 @@ add_library(hsd SHARED
   Pgp2b.cc
   Pgp3.cc
   PhyCore.cc
+  PvDef.cc
   QABase.cc
   TprCore.cc
   Tps2481.cc
@@ -41,6 +45,7 @@ target_link_libraries(hsd
     xtcdata::xtc
     service
     mmhw
+    readline
     rt
 )
 
@@ -55,7 +60,7 @@ add_executable(hsd_eyescan hsd_eyescan.cc)
 
 target_link_libraries(hsd_eyescan
    dl
-   pthread
+   Threads::Threads
    service
    mmhw
    rt
@@ -70,7 +75,7 @@ target_link_libraries(hsd134PVs
     ${EPICS_PVDATA_LIB}
     ${EPICS_PVACCESS_LIB}
     ${EPICS_PVACLIENT_LIB}
-    pthread
+    Threads::Threads
     app
     hsd
     mmhw
@@ -82,7 +87,7 @@ add_executable(hsd126PVs hsd126PVs.cc PV126Ctrls.cc PVCtrlsBase.cc PV126Stats.cc
 target_link_libraries(hsd126PVs
     service
     epicstools
-    pthread
+    Threads::Threads
     app
     hsd
     mmhw
@@ -102,7 +107,7 @@ target_link_libraries(hsd_sim
 #)
 
 #target_link_libraries(hsd_validate
-#    pthread
+#    Threads::Threads
 #    hsd
 #    mmhw
 #    rt
@@ -127,7 +132,7 @@ target_link_libraries(hsdRead
    mmhw
    xtcdata::xtc
    epicstools
-   pthread
+   Threads::Threads
    rt
 )
 

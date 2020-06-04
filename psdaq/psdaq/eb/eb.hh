@@ -10,13 +10,16 @@
 namespace Pds {
   namespace Eb {
 
-    const unsigned RTMON_PORT_BASE = 5559;
+    const unsigned RTMON_PORT_BASE = 5559;      // Run-time montitoring port
 
     const unsigned MAX_DRPS       = 64;         // Maximum possible number of Contributors
     const unsigned MAX_TEBS       = 64;         // Maximum possible number of Event Builders
+    const unsigned MAX_MRQS       = MAX_TEBS;   // Maximum possible number of Monitor Requestors
     const unsigned MAX_MEBS       = 64;         // Maximum possible number of Monitors
+    const unsigned MAX_PORTS      = MAX_DRPS + MAX_TEBS + MAX_MRQS + MAX_MEBS;
 
-    const unsigned TEB_PORT_BASE  = 32768;                     // TEB to receive L3 contributions
+    const unsigned OUR_PORT_BASE  = 1024;       // Pick from range 1024 - 32768, 61000 - 65535
+    const unsigned TEB_PORT_BASE  = OUR_PORT_BASE;             // TEB to receive L3 contributions
     const unsigned DRP_PORT_BASE  = TEB_PORT_BASE + MAX_TEBS;  // TEB to send    results
     const unsigned MRQ_PORT_BASE  = DRP_PORT_BASE + MAX_DRPS;  // TEB to receive monitor requests
     const unsigned MEB_PORT_BASE  = MRQ_PORT_BASE + MAX_MEBS;  // MEB to receive data contributions
@@ -37,6 +40,7 @@ namespace Pds {
 
       string_t ifAddr;             // Network interface to use
       string_t port;               // Served port to receive results
+      string_t instrument;         // Instrument name for monitoring
       unsigned partition;          // The chosen system
       string_t alias;              // Unique name passed on cmd line
       unsigned id;                 // Contributor instance identifier
@@ -48,14 +52,17 @@ namespace Pds {
       unsigned verbose;            // Level of detail to print
       uint16_t readoutGroup;       // RO group receiving trigger result data
       uint16_t contractor;         // RO group supplying trigger input  data
+      bool     batching;           // Batching enable flag
     };
 
     struct MebCtrbParams
     {
       using vecstr_t = std::vector<std::string>;
+      using string_t = std::string;
 
       vecstr_t addrs;              // MEB addresses
       vecstr_t ports;              // MEB ports
+      string_t instrument;         // Instrument name for monitoring
       unsigned partition;          // The chosen system
       unsigned id;                 // Contributor instance identifier
       unsigned maxEvents;          // Max # of events to provide for
@@ -74,6 +81,7 @@ namespace Pds {
       string_t  ifAddr;            // Network interface to use
       string_t  ebPort;            // EB port to serve
       string_t  mrqPort;           // Mon request port to receive on
+      string_t  instrument;        // Instrument name for monitoring
       unsigned  partition;         // The chosen system
       string_t  alias;             // Unique name passed on cmd line
       unsigned  id;                // EB instance identifier

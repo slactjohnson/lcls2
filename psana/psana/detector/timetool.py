@@ -1,6 +1,20 @@
 import numpy as np
 from psana.detector.detector_impl import DetectorImpl
+from amitypes import Array1d
 
+class tt_raw_2_0_0(DetectorImpl):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self._add_fields()
+
+    def _info(self,evt):
+        # check for missing data
+        segments = self._segments(evt)
+        if segments is None: return None
+        return segments[0]
+
+# leftover from when we wrote out the EventBatcher format.
+# still used at the moment in the self-tests
 class ttdet_ttalg_0_0_1(DetectorImpl):
     def __init__(self, *args):
         super(ttdet_ttalg_0_0_1, self).__init__(*args)
@@ -25,6 +39,10 @@ class ttdet_ttalg_0_0_1(DetectorImpl):
         pFrame._parseData(p)
 
         return pFrame
+
+    def image(self, evt) -> Array1d:
+        parsed_frame_object = self.parsed_frame(evt)
+        return parsed_frame_object.prescaled_frame
 
     #def edge_value(self,evt):              #speak with damiani for how to send back this data to ami
     #def edge_uncertainty(self,evt):        #needs _(underscore) to hide things AMI doesn't need to see.

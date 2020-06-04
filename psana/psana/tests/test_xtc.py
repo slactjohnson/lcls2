@@ -4,7 +4,7 @@ import sys
 import pytest
 sys.path = [os.path.abspath(os.path.dirname(__file__))] + sys.path
 from xtc import xtc
-from det import det
+from det import det, detnames, det_container
 
 import hashlib
 from psana import DataSource
@@ -60,14 +60,14 @@ class Test:
         callback_based = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'user_callbacks.py')
         subprocess.check_call(['python',callback_based], env=env)
         
-        parallel_reader = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'parallelreader.py')
-        subprocess.check_call(['python',parallel_reader], env=env)
-        
         loop_based_exhausted = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'ds.py')
         subprocess.check_call(['python',loop_based_exhausted], env=env)
-        
-        run_steps = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'run_steps.py')
-        subprocess.check_call(['python',run_steps], env=env)
+
+    def test_detnames(self, xtc_file):
+        # for now just check that the various detnames don't crash
+        for flag in ['-r','-e','-s','-i']:
+            subprocess.check_call(['detnames',flag,xtc_file])
+        subprocess.check_call(['detnames',xtc_file])
 
     @pytest.mark.legion
     @pytest.mark.skipif(sys.platform == 'darwin', reason="psana with legion not supported on mac")
@@ -126,4 +126,6 @@ class Test:
 
     def test_det(self, xtc_file):
         det(xtc_file)
+        detnames(xtc_file)
+        det_container(xtc_file)
 

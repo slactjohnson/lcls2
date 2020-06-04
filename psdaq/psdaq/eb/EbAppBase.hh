@@ -5,6 +5,8 @@
 #include "EventBuilder.hh"
 #include "EbLfServer.hh"
 
+#include "psdaq/service/MetricExporter.hh"
+
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -33,12 +35,11 @@ namespace Pds {
                 const unsigned  maxBuffers);
       virtual ~EbAppBase() {}
     public:
-      const uint64_t&  rxPending() const { return _transport.pending(); }
-      const uint64_t&  bufferCnt() const { return _bufferCnt; }
-      const uint64_t&  fixupCnt()  const { return _fixupCnt; }
       int              checkEQ()  { return _transport.pollEQ(); }
     public:
-      int              configure(const EbParams&);
+      int              configure(const std::string& pfx,
+                                 const EbParams&,
+                                 const std::shared_ptr<MetricExporter>&);
       void             shutdown();
       int              process();
       void             trim(unsigned dst);
@@ -49,7 +50,7 @@ namespace Pds {
       u64arr_t                  _contract;
       Pds::Eb::EbLfServer       _transport;
       std::vector<EbLfSvrLink*> _links;
-      std::vector<size_t>       _trRegSize;
+      std::vector<size_t>       _bufRegSize;
       std::vector<size_t>       _maxTrSize;
       std::vector<size_t>       _maxBufSize;
       const unsigned            _maxEntries;
@@ -57,7 +58,10 @@ namespace Pds {
       //EbDummyTC                 _dummy;   // Template for TC of dummy contributions  // Revisit: ???
       const unsigned            _verbose;
       uint64_t                  _bufferCnt;
-      uint64_t                  _fixupCnt;
+      uint64_t                  _tmoEvtCnt; // Count of timed out events
+      uint64_t                  _fixupCnt;  // Count of flushed   events
+      Pds::PromHistogram*       _fixupSrc;
+      Pds::PromHistogram*       _ctrbSrc;
     private:
       void*                     _region;
       uint64_t                  _contributors;

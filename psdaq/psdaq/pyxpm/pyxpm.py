@@ -18,6 +18,7 @@ from psdaq.pyxpm.xpm.Top import *
 from psdaq.pyxpm.pvstats import *
 from psdaq.pyxpm.pvctrls import *
 from psdaq.pyxpm.pvxtpg  import *
+from psdaq.pyxpm.pvhandler import *
 
 class NoLock(object):
     def __init__(self):
@@ -45,10 +46,12 @@ def main():
     parser.add_argument('-P', required=True, help='e.g. DAQ:LAB2:XPM:1', metavar='PREFIX')
     parser.add_argument('-v', '--verbose', action='store_true', help='be verbose')
     parser.add_argument('--ip', type=str, required=True, help="IP address" )
+    parser.add_argument('--db', type=str, default=None, help="save/restore db, for example [https://pswww.slac.stanford.edu/ws-auth/devconfigdb/ws/,configDB,LAB2,PROD]")
 
     args = parser.parse_args()
     if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
+#        logging.basicConfig(level=logging.DEBUG)
+        setVerbose(True)
 
     # Set base
     base = pr.Root(name='AMCc',description='') 
@@ -76,11 +79,8 @@ def main():
     lock = Lock()
 
     pvstats = PVStats(provider, lock, args.P, xpm)
-    pvctrls = PVCtrls(provider, lock, args.P, args.ip, xpm, pvstats._groups)
-    pvxtpg  = None
-    if 'xtpg' in xpm.AxiVersion.ImageName.get():
-        pvxtpg = PVXTpg(provider, lock, args.P, xpm, xpm.mmcmParms)
-
+    pvctrls = PVCtrls(provider, lock, name=args.P, ip=args.ip, xpm=xpm, stats=pvstats._groups, db=args.db)
+    pvxtpg  = PVXTpg(provider, lock, args.P, xpm, xpm.mmcmParms, cuMode='xtpg' in xpm.AxiVersion.ImageName.get())
 
     # process PVA transactions
     updatePeriod = 1.0
@@ -94,6 +94,7 @@ def main():
                 if pvxtpg is not None:
                     pvxtpg .update()
                 pvstats.update()
+                pvctrls.update()
                 curr  = time.perf_counter()
                 delta = prev+updatePeriod-curr
 #                print('Delta {:.2f}  Update {:.2f}  curr {:.2f}  prev {:.2f}'.format(delta,curr-prev,curr,prev))

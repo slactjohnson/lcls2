@@ -39,6 +39,35 @@ def calib():
         raise("Error getting geometry from calib_constants: %s"%e)
 
 
+class MyCustomArgs(object):
+    raw = False
+    epics = False
+    scan = False
+    def __init__(self, dsname, option):
+        self.dsname = dsname
+        if option == "-r":
+            self.raw = True
+        elif option == "-e":
+            self.epics = True
+        elif option == "-s":
+            self.scan = True
+
+def detnames(xtc_file):
+    ds = DataSource(files=xtc_file)
+    myrun = next(ds.runs())
+
+    assert ('xppcspad', 'cspad', 'raw', '2_3_42') in myrun.xtcinfo
+    assert myrun.epicsinfo[('HX2:DVD:GCC:01:PMON', 'raw')] == 'raw'
+    assert myrun.scaninfo[('motor1', 'raw')] == 'raw'
+
+def det_container(xtc_file):
+    ds = DataSource(files=xtc_file)
+    myrun = next(ds.runs())
+    det = myrun.Detector('bogusdet', accept_missing=True)
+    for config in det.raw._configs:
+        for e in config.__dict__['bogusdet'].items(): 
+            pass 
+
 if __name__ == '__main__':
     det()
     calib()

@@ -3,7 +3,11 @@
 #include <iostream>
 #include <vector>
 #include <chrono>
+#include <functional>
 #include <prometheus/exposer.h>
+
+namespace Pds
+{
 
 struct Previous
 {
@@ -11,11 +15,29 @@ struct Previous
     std::chrono::steady_clock::time_point time;
 };
 
+class PromHistogram
+{
+public:
+    using BucketBoundaries = std::vector<double>;
+
+    PromHistogram(unsigned numBins, double binWidth, double binMin);
+
+    void observe(double value);
+    void collect(prometheus::MetricFamily& family);
+    void clear();
+
+private:
+    BucketBoundaries      _boundaries;
+    std::vector<uint64_t> _counts;
+    double                _sum;
+};
+
 enum class MetricType
 {
     Gauge,
     Counter,
-    Rate
+    Rate,
+    Histogram
 };
 
 class MetricExporter : public prometheus::Collectable
@@ -24,12 +46,17 @@ public:
     void add(const std::string& name,
              const std::map<std::string, std::string>& labels,
              MetricType type, std::function<uint64_t()> value);
-    std::vector<prometheus::MetricFamily> Collect() override;
+    PromHistogram&
+         add(const std::string& name,
+             const std::map<std::string, std::string>& labels,
+             unsigned numBins, double binWidth=1.0, double binMin=0.0);
+    std::vector<prometheus::MetricFamily> Collect() const override;
 private:
-    std::vector<prometheus::MetricFamily> m_families;
+    mutable std::vector<prometheus::MetricFamily> m_families;
     std::vector<std::function<uint64_t()> > m_values;
+    mutable std::vector<PromHistogram> m_histos;
     std::vector<MetricType> m_type;
-    std::vector<Previous> m_previous;
+    mutable std::vector<Previous> m_previous;
 };
 
 template<typename T>
@@ -48,3 +75,5 @@ void setValue(prometheus::MetricFamily& family, const T& value)
             std::cout<<"wrong type\n";
     }
 }
+
+};

@@ -40,16 +40,24 @@ static mqd_t _openQueue(const char* name, unsigned flags, unsigned perms,
 {
   struct mq_attr mymq_attr;
   mqd_t queue;
+  bool first = true;
   while(1) {
     queue = mq_open(name, flags, perms, &mymq_attr);
     if (queue == (mqd_t)-1) {
-      char b[128];
-      sprintf(b,"mq_open %s\n",name);
-      printf(b);
+      if (first) {
+        first = false;
+        printf("mq_open %s",name);
+      }
+      else {
+        printf(".");
+      }
+      fflush(stdout);
       sleep(1);
       if (!lwait) break;
     }
     else {
+      if (!first)
+        printf("\n");
       printf("Opened queue %s (%d)\n",name,queue);
       break;
     }
@@ -121,7 +129,7 @@ namespace psalg {
 #endif
               mq_timedsend(oq[ioq], (const char *)&myMsg, sizeof(myMsg), priority, &_tmo);
           } else {
-              if(::send(_trfd,(char*)&myMsg,sizeof(myMsg),0)<0) {
+              if(::send(_trfd,(char*)&myMsg,sizeof(myMsg),MSG_NOSIGNAL)<0) {
                   // cpo: we can get an error if the server exits
                   // not clear how we should handle this.  keep
                   // the server alive? print a warning?
@@ -158,11 +166,11 @@ namespace psalg {
         if ( (i>=0) && (i<myMsg.numberOfBuffers())) {
           XtcData::Dgram* dg = (XtcData::Dgram*) (_shm + (myMsg.sizeOfBuffers() * i));
 #ifdef DBUG2
-          printf("*** received transition id %d\n",dg->service());
+          printf("*** received transition id %d (%s)\n",dg->service(), XtcData::TransitionId::name(dg->service()));
 #endif
           index = i;
           size = myMsg.sizeOfBuffers();
-          
+
           return dg;
         }
         else {
@@ -200,7 +208,7 @@ namespace psalg {
           if ( (i>=0) && (i<myMsg.numberOfBuffers())) {
             XtcData::Dgram* dg = (XtcData::Dgram*) (_shm + (myMsg.sizeOfBuffers() * i));
 #ifdef DBUG2
-            printf("*** received event id %d\n",dg->service());
+            printf("*** received event id %d (%s)\n",dg->service(), XtcData::TransitionId::name(dg->service()));
 #endif
             index = i;
             size = myMsg.sizeOfBuffers();
@@ -256,10 +264,10 @@ void* ShmemClient::get(int& index, int& size)
   while (1) {
     if (::poll(_pfd, _nfd, -1) > 0) {
       if (_pfd[0].revents & POLLIN) { // Transition
-    	return _handler->transition(index,size);
+        return _handler->transition(index,size);
       }
       else if (_pfd[1].revents & POLLIN) { // Event
-    	return _handler->event(index,size);
+        return _handler->event(index,size);
       }
     }
   }
@@ -320,7 +328,7 @@ int ShmemClient::connect(const char* tag, int tr_index) {
     socklen_t addrlen = sizeof(sockaddr_in);
     sockaddr_in name;
     ::getsockname(_myTrFd, (sockaddr*)&name, &addrlen);
-printf("Connected to %08x.%d [%d] from %08x.%d\n",
+    printf("Connected to %08x.%d [%d] from %08x.%d\n",
            ntohl(saddr.sin_addr.s_addr),ntohs(saddr.sin_port),_myTrFd,
            ntohl(name.sin_addr.s_addr),ntohs(name.sin_port));
 #endif
